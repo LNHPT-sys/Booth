@@ -285,6 +285,20 @@
     padding:18px 6px;
   }
   .grid2{display:flex;gap:9px;flex-wrap:wrap;}
+
+  /* ---- sessions ---- */
+  .sess-list{margin-top:11px;}
+  .sess{display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--edge);}
+  .sess .open{
+    flex:1;min-width:0;text-align:left;background:transparent;border:none;cursor:pointer;padding:0;
+  }
+  .sess .nm{
+    display:block;font-family:var(--mono);font-size:11.5px;color:var(--bone);letter-spacing:.04em;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .sess .sub{display:block;font-family:var(--mono);font-size:9.5px;color:var(--ash2);margin-top:2px;letter-spacing:.03em;}
+  .sess.now .nm{color:var(--brass);}
+  .sess.now .open{cursor:default;}
   .grid2>*{flex:1 1 150px;}
 </style>
 </head>
@@ -297,6 +311,20 @@
     </div>
     <div class="mode" id="mode"><span class="dot"></span><span id="modeTxt">checking input</span></div>
   </header>
+
+  <section>
+    <div class="eyebrow">
+      <h2>Session</h2>
+      <button class="btn" id="newSess">+ New session</button>
+    </div>
+    <div class="card">
+      <div class="take-head" style="margin-bottom:0;">
+        <input class="take-name" id="sessName" maxlength="40" aria-label="Session name">
+        <span class="meta" id="sessMeta" style="font-family:var(--mono);font-size:10px;color:var(--ash2);"></span>
+      </div>
+      <div class="sess-list" id="sessList"></div>
+    </div>
+  </section>
 
   <section>
     <div class="eyebrow">
@@ -749,6 +777,7 @@ const S={
   playing:false, recording:false, playhead:0,
   beatVol:0.85, polish:true, monitor:false, countIn:true, loop:false, stems:true,
   latency:0,                 // this device's record round-trip, in ms
+  sid:null, name:"Session 1",  // the open session; each one is its own beat + takes
   seq:0
 };
 /* Latency belongs to the headphones and phone, not the song, so it lives
@@ -800,14 +829,26 @@ function idbGet(k){
     }catch(e){ res(null); }
   });
 }
+function idbDel(k){
+  return new Promise(res=>{
+    if(!DB.db) return res(false);
+    try{
+      const tx=DB.db.transaction("proj","readwrite");
+      tx.objectStore("proj").delete(k);
+      tx.oncomplete=()=>res(true); tx.onerror=()=>res(false); tx.onabort=()=>res(false);
+    }catch(e){ res(false); }
+  });
+}
 function scheduleSave(){
   clearTimeout(saveTimer);
   saveTimer=setTimeout(saveProject,700);
 }
 async function saveProject(){
-  if(!DB.ok) return;
+  if(!DB.ok||!S.sid) return;
+  const id=S.sid;
   try{
-    await idbPut("current",{
+    await idbPut("p:"+id,{
+      name:S.name,
       beat: S.beat?{name:S.beat.name,blob:S.beat.blob,bpm:S.beat.bpm||0}:null,
       beatVol:S.beat?S.beatVol:0.85,
       polish:S.polish, countIn:S.countIn, loop:S.loop, stems:S.stems,
@@ -817,12 +858,19 @@ async function saveProject(){
         procWav:t.procWav||null, bleedOff:!!t.bleedOff, recorded:!!t.recorded
       }))
     });
+    let e=SESS.list.find(x=>x.id===id);
+    if(!e){ e={id:id}; SESS.list.push(e); }
+    if(id===S.sid){ e.name=S.name; e.beat=S.beat?S.beat.name:""; e.takes=S.takes.length; }
+    e.updated=Date.now();
+    await idbPut("index",SESS.list);
+    renderSessions();
   }catch(e){}
 }
-async function loadProject(){
-  if(!DB.ok) return false;
-  const p=await idbGet("current");
+async function loadProject(id){
+  if(!DB.ok||!id) return false;
+  const p=await idbGet("p:"+id);
   if(!p) return false;
+  if(p.name) S.name=p.name;
   let any=false;
   try{
     if(p.beat&&p.beat.blob){
@@ -855,6 +903,139 @@ async function loadProject(){
     }
   }catch(e){}
   return any;
+}
+
+/* ============================ sessions ============================ */
+/* Every session is one project — its own beat, takes and mix settings —
+   stored under "p:<id>". "index" holds the lightweight list so the menu
+   never has to load audio just to show names. */
+const SESS={ list:[], busy:false };
+function newId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function esc(v){ return String(v).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c])); }
+function nextName(){
+  let n=SESS.list.length+1;
+  while(SESS.list.some(x=>x.name==="Session "+n)) n++;
+  return "Session "+n;
+}
+function setActive(id){
+  try{ localStorage.setItem("booth.session",id); }catch(e){}
+  idbPut("active",id);
+}
+function resetProject(){
+  stopAll();
+  S.beat=null; S.takes=[]; S.beatVol=0.85; S.playhead=0;
+  S.polish=true; S.countIn=true; S.loop=false; S.stems=true;
+  beatEnv=null;
+}
+/* Finish writing the open session before anything replaces it. */
+async function flushSave(){ clearTimeout(saveTimer); await saveProject(); }
+function sessGuard(){
+  if(S.recording){ toast("Stop recording before switching sessions.","bad"); return false; }
+  return !SESS.busy;
+}
+
+async function openSession(id){
+  if(!sessGuard()||id===S.sid) return;
+  SESS.busy=true;
+  try{
+    await flushSave();
+    resetProject();
+    const e=SESS.list.find(x=>x.id===id);
+    S.sid=id; S.name=e?e.name:"Session";
+    await loadProject(id);
+    setActive(id);
+    renderAll(); renderSessions();
+    toast("Opened "+S.name+".");
+  }finally{ SESS.busy=false; }
+}
+async function newSession(){
+  if(!sessGuard()) return;
+  if(!DB.ok&&(S.beat||S.takes.length)&&
+     !confirm("Saving is off in this browser, so starting a new session throws this one away. Continue?")) return;
+  SESS.busy=true;
+  try{
+    await flushSave();
+    resetProject();
+    S.sid=newId(); S.name=nextName();
+    SESS.list.push({id:S.sid,name:S.name,beat:"",takes:0,updated:Date.now()});
+    setActive(S.sid);
+    await saveProject();
+    renderAll(); renderSessions();
+    toast(S.name+" started — load a beat.","good");
+  }finally{ SESS.busy=false; }
+}
+async function deleteSession(id){
+  if(!sessGuard()) return;
+  const e=SESS.list.find(x=>x.id===id); if(!e) return;
+  if(!confirm("Delete \u201c"+e.name+"\u201d with its beat and takes? This can't be undone.")) return;
+  SESS.list=SESS.list.filter(x=>x.id!==id);
+  await idbDel("p:"+id);
+  await idbPut("index",SESS.list);
+  if(id===S.sid){
+    S.sid=null;              /* nothing left to flush — it's gone */
+    const rest=SESS.list.slice().sort((a,b)=>(b.updated||0)-(a.updated||0));
+    if(rest.length) await openSession(rest[0].id);
+    else await newSession();
+  }
+  renderSessions();
+  toast("Deleted "+e.name+".");
+}
+
+function renderSessions(){
+  const nm=$("sessName");
+  if(document.activeElement!==nm) nm.value=S.name;
+  const n=SESS.list.length;
+  $("sessMeta").textContent = DB.ok ? (n+(n===1?" saved":" saved")) : "not saved";
+  const box=$("sessList");
+  if(!DB.ok){
+    box.innerHTML='<div class="check-sub">Saving is off in this browser, so only one session at a time.</div>';
+    return;
+  }
+  const rows=SESS.list.slice().sort((a,b)=>(b.updated||0)-(a.updated||0));
+  if(rows.length<2){
+    box.innerHTML='<div class="check-sub">Tap NEW SESSION to start another project. Every session keeps its own beat and takes, and they all show up here.</div>';
+    return;
+  }
+  box.innerHTML=rows.map(r=>{
+    const now=r.id===S.sid;
+    const when=r.updated?new Date(r.updated).toLocaleDateString(undefined,{month:"short",day:"numeric"}):"";
+    const bits=[now?"open now":when, r.beat?r.beat.replace(/\.[^.]+$/,""):"no beat",
+                (r.takes||0)+((r.takes===1)?" take":" takes")];
+    return '<div class="sess'+(now?" now":"")+'" data-sid="'+esc(r.id)+'">'+
+      '<button class="open" data-sact="open"'+(now?' aria-current="true"':'')+'>'+
+        '<span class="nm">'+esc(r.name||"Untitled")+'</span>'+
+        '<span class="sub">'+esc(bits.join("  ·  "))+'</span></button>'+
+      '<button class="mini" data-sact="del" title="Delete session" aria-label="Delete '+esc(r.name||"session")+'">✕</button>'+
+    '</div>';
+  }).join("");
+}
+
+/* First run on this version: adopt the single project older builds kept
+   under "current" as Session 1, so nobody loses work. */
+async function loadSessions(){
+  if(!DB.ok){ S.sid=null; return false; }
+  SESS.list=(await idbGet("index"))||[];
+  if(!SESS.list.length){
+    const id=newId(), old=await idbGet("current");
+    let name="Session 1";
+    if(old){
+      await idbPut("p:"+id,Object.assign({},old,{name:name}));
+      await idbDel("current");
+    }
+    SESS.list=[{id:id,name:name,beat:old&&old.beat?old.beat.name:"",
+                takes:old&&old.takes?old.takes.length:0,updated:Date.now()}];
+    await idbPut("index",SESS.list);
+  }
+  let active=null;
+  try{ active=localStorage.getItem("booth.session"); }catch(e){}
+  if(!active) active=await idbGet("active");
+  if(!SESS.list.some(x=>x.id===active)){
+    active=SESS.list.slice().sort((a,b)=>(b.updated||0)-(a.updated||0))[0].id;
+  }
+  const e=SESS.list.find(x=>x.id===active);
+  S.sid=active; S.name=e.name||"Session 1";
+  setActive(active);
+  return await loadProject(active);
 }
 
 /* ============================ environment probe ============================ */
@@ -1522,6 +1703,21 @@ $("beatFile").addEventListener("change",e=>{
   if(f) loadBeatFile(f);
   e.target.value="";
 });
+$("newSess").addEventListener("click",newSession);
+$("sessList").addEventListener("click",e=>{
+  const b=e.target.closest("[data-sact]"); if(!b) return;
+  const row=b.closest(".sess"); if(!row) return;
+  if(b.dataset.sact==="open") openSession(row.dataset.sid);
+  else if(b.dataset.sact==="del") deleteSession(row.dataset.sid);
+});
+$("sessName").addEventListener("input",e=>{
+  S.name=e.target.value.slice(0,40);
+  scheduleSave();
+});
+$("sessName").addEventListener("change",e=>{
+  if(!S.name.trim()){ S.name="Untitled"; e.target.value=S.name; }
+  scheduleSave();
+});
 $("importTake").addEventListener("click",()=>$("takeFile").click());
 $("takeFile").addEventListener("change",e=>{
   const fs=Array.from(e.target.files||[]);
@@ -1656,8 +1852,10 @@ document.addEventListener("keydown",e=>{
   renderAll();
   setPlayIcon();
 
+  renderSessions();
   DB.db=await idbOpen(); DB.ok=!!DB.db;
-  const restored=await loadProject();
+  const restored=await loadSessions();
+  renderSessions();
   if(restored){ renderAll(); toast("Picked your session back up where you left it."); }
 
   await probeAsync();
