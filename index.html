@@ -1,0 +1,1652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="BOOTH — mobile vocal booth. Load a beat, record over it, stack takes, mix and export.">
+<meta name="theme-color" content="#0D0C0A">
+<!-- launches fullscreen when added to the iPhone home screen -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="BOOTH">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  /* Base reset — matches what the artifact runtime supplied, so the page
+     renders here exactly as it did inside Claude. */
+  :root{
+    color-scheme: dark;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  html{ -webkit-text-size-adjust: 100%; }
+  body{ margin:0; }
+  img{ max-width:100%; }
+  [hidden]{ display:none !important; }
+</style>
+<title>BOOTH</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+  :root{
+    --ground:#0D0C0A;
+    --panel:#17140F;
+    --panel2:#1F1B15;
+    --edge:#2C261D;
+    --edge2:#3A3228;
+    --bone:#EDE6D8;
+    --ash:#938B7C;
+    --ash2:#645C50;
+    --rec:#F04E23;
+    --rec-deep:#A8341A;
+    --brass:#D9A441;
+    --go:#54B98A;
+    --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+    --cond:'Barlow Condensed','Arial Narrow',system-ui,sans-serif;
+    --body:'Barlow',system-ui,-apple-system,'Segoe UI',sans-serif;
+  }
+
+  html,body{height:100%;}
+  body{
+    margin:0;background:var(--ground);color:var(--bone);
+    font-family:var(--body);font-size:14px;line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  *{box-sizing:border-box;}
+  button{font-family:inherit;color:inherit;}
+  button:focus-visible,input:focus-visible,[tabindex]:focus-visible{
+    outline:2px solid var(--brass);outline-offset:2px;
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
+
+  /* ---- shell ---- */
+  .wrap{padding:0 16px;padding-bottom:180px;max-width:720px;margin:0 auto;}
+
+  .top{
+    padding-block:18px 14px;border-bottom:1px solid var(--edge);
+    display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  }
+  .brand{display:flex;align-items:baseline;gap:9px;}
+  .brand h1{
+    font-family:var(--cond);font-weight:700;font-size:34px;letter-spacing:.01em;
+    margin:0;line-height:.9;text-transform:uppercase;
+  }
+  .brand .tag{font-family:var(--mono);font-size:10px;color:var(--ash2);letter-spacing:.14em;}
+  .mode{
+    font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+    border:1px solid var(--edge2);border-radius:3px;padding:5px 9px;color:var(--ash);
+    display:flex;align-items:center;gap:7px;white-space:nowrap;
+  }
+  .mode .dot{width:7px;height:7px;border-radius:50%;background:var(--ash2);flex:none;}
+  .mode.live{border-color:var(--go);color:var(--go);} .mode.live .dot{background:var(--go);}
+  .mode.mix{border-color:var(--brass);color:var(--brass);} .mode.mix .dot{background:var(--brass);}
+
+  section{padding-block:22px 0;}
+  .eyebrow{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px;
+  }
+  .eyebrow h2{
+    font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.2em;
+    text-transform:uppercase;color:var(--brass);margin:0;
+  }
+  .eyebrow .meta{font-family:var(--mono);font-size:10px;color:var(--ash2);letter-spacing:.06em;}
+
+  .card{background:var(--panel);border:1px solid var(--edge);border-radius:7px;padding:14px;}
+
+  /* ---- signal check ---- */
+  .check-head{display:flex;align-items:center;gap:11px;}
+  .check-head .txt{flex:1;min-width:0;}
+  .check-title{font-family:var(--mono);font-size:12px;letter-spacing:.04em;}
+  .check-sub{font-family:var(--body);font-size:12.5px;color:var(--ash);margin-top:3px;line-height:1.45;}
+  .rows{margin-top:13px;border-top:1px solid var(--edge);}
+  .row{
+    display:flex;justify-content:space-between;gap:12px;align-items:baseline;
+    padding:7px 0;border-bottom:1px solid var(--edge);
+    font-family:var(--mono);font-size:10.5px;
+  }
+  .row .k{color:var(--ash2);letter-spacing:.09em;text-transform:uppercase;}
+  .row .v{color:var(--bone);text-align:right;word-break:break-word;}
+  .v.ok{color:var(--go);} .v.no{color:var(--rec);} .v.warn{color:var(--brass);}
+
+  /* ---- buttons ---- */
+  .btn{
+    font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    background:transparent;border:1px solid var(--edge2);color:var(--ash);
+    border-radius:4px;padding:8px 12px;cursor:pointer;white-space:nowrap;
+  }
+  .btn:hover{border-color:var(--ash2);color:var(--bone);}
+  .btn.key{background:var(--brass);border-color:var(--brass);color:#17140F;font-weight:700;}
+  .btn.key:hover{background:#E4B356;border-color:#E4B356;color:#17140F;}
+  .btn.solid{background:var(--bone);border-color:var(--bone);color:var(--ground);font-weight:700;}
+  .btn[disabled]{opacity:.38;cursor:default;}
+  .btn.wide{width:100%;text-align:center;padding:12px 0;}
+
+  .dash{
+    width:100%;padding:20px 12px;background:transparent;border:1px dashed var(--edge2);
+    border-radius:6px;cursor:pointer;color:var(--ash);font-family:var(--mono);
+    font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;
+  }
+  .dash:hover{border-color:var(--brass);color:var(--bone);}
+  .dash .hint{
+    display:block;font-size:10.5px;letter-spacing:.01em;text-transform:none;
+    color:var(--ash2);margin-top:6px;font-family:var(--body);
+  }
+
+  /* ---- meter ---- */
+  .meter{height:5px;border-radius:2px;background:var(--panel2);overflow:hidden;margin-top:9px;}
+  .meter i{display:block;height:100%;width:0;background:var(--go);transition:width .05s linear;}
+
+  /* ---- timeline lane (signature) ---- */
+  .ruler{
+    position:relative;height:15px;margin-bottom:5px;border-bottom:1px solid var(--edge);
+  }
+  .ruler span{
+    position:absolute;top:0;font-family:var(--mono);font-size:9px;color:var(--ash2);
+    transform:translateX(-1px);letter-spacing:.04em;
+  }
+  .ruler span::before{
+    content:'';position:absolute;left:0;top:11px;width:1px;height:4px;background:var(--edge2);
+  }
+  .lane{
+    position:relative;height:52px;background:var(--panel2);border-radius:4px;overflow:hidden;
+  }
+  .take .lane{cursor:pointer;}
+  .lane.beat{height:56px;}
+  .clip{position:absolute;top:0;bottom:0;background:rgba(240,78,35,.07);border-left:1px solid var(--rec-deep);border-right:1px solid var(--rec-deep);}
+  .clip canvas,.lane>canvas{display:block;width:100%;height:100%;}
+  .head{
+    position:absolute;top:0;bottom:0;width:1.5px;background:var(--brass);pointer-events:none;
+    box-shadow:0 0 6px rgba(217,164,65,.55);
+  }
+  .head.rec{background:var(--rec);box-shadow:0 0 6px rgba(240,78,35,.6);}
+
+  /* ---- take ---- */
+  .take{background:var(--panel);border:1px solid var(--edge);border-radius:7px;padding:12px;}
+  .take.solo{border-color:var(--brass);}
+  .take.off{opacity:.42;}
+  .take-head{display:flex;align-items:center;justify-content:space-between;gap:9px;margin-bottom:9px;}
+  .take-name{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;background:transparent;
+    border:none;border-bottom:1px solid transparent;color:var(--bone);padding:2px 0;
+    min-width:0;flex:1;
+  }
+  .take-name:hover,.take-name:focus{border-bottom-color:var(--edge2);}
+  .mini{
+    width:27px;height:27px;border-radius:4px;border:1px solid var(--edge2);background:transparent;
+    color:var(--ash);font-family:var(--mono);font-size:11px;cursor:pointer;flex:none;
+    display:flex;align-items:center;justify-content:center;padding:0;
+  }
+  .mini:hover{color:var(--bone);border-color:var(--ash2);}
+  .mini.on{background:var(--brass);border-color:var(--brass);color:#17140F;font-weight:700;}
+  .mini.on.red{background:var(--rec);border-color:var(--rec);color:#fff;}
+  .acts{display:flex;gap:7px;margin-top:11px;}
+  .btn.sm{flex:1;font-size:9.5px;padding:8px 5px;letter-spacing:.09em;}
+  .btn.sm.done{border-color:var(--go);color:var(--go);}
+  .knobs{display:flex;flex-direction:column;gap:5px;margin-top:10px;}
+  .knob{display:flex;align-items:center;gap:9px;}
+  .knob .k{
+    font-family:var(--mono);font-size:9px;color:var(--ash2);letter-spacing:.1em;
+    width:32px;flex:none;text-transform:uppercase;
+  }
+  .knob .v{
+    font-family:var(--mono);font-size:9.5px;color:var(--ash);width:52px;flex:none;text-align:right;
+    font-variant-numeric:tabular-nums;
+  }
+  .knob .v.set{color:var(--brass);}
+  input[type=range]{
+    flex:1;min-width:0;height:22px;accent-color:var(--brass);background:transparent;
+  }
+  input[type=range].red{accent-color:var(--rec);}
+
+  /* ---- toggles ---- */
+  .tog{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;
+    background:transparent;border:none;padding:10px 0;cursor:pointer;text-align:left;
+    border-bottom:1px solid var(--edge);
+  }
+  .tog:last-of-type{border-bottom:none;}
+  .tog>span:first-child{display:block;min-width:0;}
+  .tog .lab{display:block;font-size:13.5px;color:var(--bone);line-height:1.3;}
+  .tog .sub{
+    display:block;font-family:var(--mono);font-size:9.5px;color:var(--ash2);
+    margin-top:3px;letter-spacing:.03em;line-height:1.5;
+  }
+  .sw{
+    width:40px;height:23px;border-radius:12px;background:var(--panel2);border:1px solid var(--edge2);
+    position:relative;flex:none;transition:background .14s,border-color .14s;
+  }
+  .sw i{
+    position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;
+    background:var(--ash2);transition:left .14s,background .14s;
+  }
+  .tog[aria-pressed=true] .sw{background:var(--brass);border-color:var(--brass);}
+  .tog[aria-pressed=true] .sw i{left:19px;background:#17140F;}
+
+  /* ---- transport ---- */
+  .bar{
+    position:fixed;left:0;right:0;bottom:0;z-index:20;
+    background:rgba(13,12,10,.97);border-top:1px solid var(--edge);
+    padding:9px 16px;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));
+    backdrop-filter:blur(10px);
+  }
+  .bar-in{max-width:720px;margin:0 auto;}
+  .scrub{height:20px;display:flex;align-items:center;cursor:pointer;}
+  .scrub .track{width:100%;height:3px;border-radius:2px;background:var(--panel2);position:relative;}
+  .scrub .fill{height:100%;border-radius:2px;background:var(--brass);width:0;}
+  .ctrls{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px;}
+  .tc{
+    font-family:var(--mono);font-size:13px;width:72px;font-variant-numeric:tabular-nums;
+    letter-spacing:.02em;
+  }
+  .tc.r{text-align:right;font-size:10px;color:var(--ash2);letter-spacing:.1em;}
+  .tc.on{color:var(--rec);}
+  .pads{display:flex;align-items:center;gap:16px;}
+  .pad{
+    width:43px;height:43px;border-radius:50%;background:var(--panel2);border:1px solid var(--edge2);
+    display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;
+  }
+  .pad:hover{border-color:var(--ash2);}
+  .pad[disabled]{opacity:.35;cursor:default;}
+  .sq{width:12px;height:12px;background:var(--bone);border-radius:1px;}
+  .tri{width:0;height:0;border-top:8px solid transparent;border-bottom:8px solid transparent;border-left:14px solid var(--bone);margin-left:3px;}
+  .pause{display:flex;gap:4px;}
+  .pause i{width:4px;height:14px;background:var(--bone);display:block;}
+  .recbtn{
+    width:66px;height:66px;border-radius:50%;background:var(--panel);
+    border:3px solid var(--rec-deep);display:flex;align-items:center;justify-content:center;
+    cursor:pointer;padding:0;transition:box-shadow .15s,border-color .15s;
+  }
+  .recbtn i{width:42px;height:42px;border-radius:50%;background:var(--rec);display:block;transition:all .15s;}
+  .recbtn.on{border-color:var(--rec);box-shadow:0 0 0 5px rgba(240,78,35,.17);animation:brk 1.6s ease-in-out infinite;}
+  .recbtn.on i{width:21px;height:21px;border-radius:3px;}
+  .recbtn[disabled]{opacity:.4;cursor:default;}
+  @keyframes brk{0%,100%{box-shadow:0 0 0 5px rgba(240,78,35,.17);}50%{box-shadow:0 0 0 9px rgba(240,78,35,.05);}}
+
+  /* ---- overlay ---- */
+  .over{
+    position:fixed;inset:0;z-index:60;background:rgba(9,8,7,.94);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  }
+  .over .lab{font-family:var(--mono);font-size:10px;letter-spacing:.3em;color:var(--brass);text-transform:uppercase;}
+  .over .big{font-family:var(--cond);font-size:104px;font-weight:700;color:var(--rec);line-height:1;}
+  .over .msg{font-family:var(--mono);font-size:12px;color:var(--ash);}
+
+  .note{
+    font-family:var(--mono);font-size:10px;color:var(--ash2);line-height:1.75;
+    padding-block:18px 4px;letter-spacing:.02em;
+  }
+  .toast{
+    position:fixed;left:16px;right:16px;bottom:126px;z-index:40;margin:0 auto;max-width:520px;
+    background:var(--panel2);border:1px solid var(--edge2);border-radius:6px;padding:11px 13px;
+    font-family:var(--mono);font-size:11px;color:var(--bone);line-height:1.5;
+  }
+  .toast.bad{border-color:var(--rec-deep);}
+  .toast.good{border-color:var(--go);}
+  .empty{
+    font-family:var(--mono);font-size:11px;color:var(--ash2);line-height:1.7;text-align:center;
+    padding:18px 6px;
+  }
+  .grid2{display:flex;gap:9px;flex-wrap:wrap;}
+  .grid2>*{flex:1 1 150px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>Booth</h1>
+      <span class="tag">//ALL_IS_GRAIL</span>
+    </div>
+    <div class="mode" id="mode"><span class="dot"></span><span id="modeTxt">checking input</span></div>
+  </header>
+
+  <section>
+    <div class="eyebrow">
+      <h2>Signal check</h2>
+      <button class="btn" id="recheck">Re-run</button>
+    </div>
+    <div class="card">
+      <div class="check-head">
+        <div class="txt">
+          <div class="check-title" id="ckTitle">Testing microphone…</div>
+          <div class="check-sub" id="ckSub">Reading this page's permissions.</div>
+        </div>
+      </div>
+      <div class="meter"><i id="meterFill"></i></div>
+      <div class="rows" id="ckRows"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">
+      <h2>Beat</h2>
+      <span class="meta" id="beatMeta"></span>
+    </div>
+    <div class="card" id="beatCard">
+      <button class="dash" id="beatDash">
+        Load beat
+        <span class="hint">Your Lyria export — mp3, wav, m4a or mp4</span>
+      </button>
+      <div id="beatBody" hidden>
+        <div class="take-head">
+          <span class="take-name" id="beatName" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+          <button class="mini" id="beatSwap" title="Swap beat">⇄</button>
+        </div>
+        <div class="ruler" id="ruler"></div>
+        <div class="lane beat" id="beatLane">
+          <canvas id="beatCv"></canvas>
+          <div class="head" id="beatHead"></div>
+        </div>
+        <div class="knobs">
+          <div class="knob">
+            <span class="k">Level</span>
+            <input type="range" id="beatVol" min="0" max="1.5" step="0.01" value="0.85">
+            <span class="v" id="beatVolV">85</span>
+          </div>
+        </div>
+      </div>
+      <input type="file" id="beatFile" accept="audio/*,video/mp4,.mp3,.wav,.m4a,.aac,.mp4" hidden>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">
+      <h2>Takes</h2>
+      <span class="meta" id="takeMeta"></span>
+    </div>
+    <div id="takeList"></div>
+    <div class="grid2" style="margin-top:10px;">
+      <button class="btn" id="importTake">Import a take</button>
+      <button class="btn" id="clearTakes">Clear all takes</button>
+    </div>
+    <input type="file" id="takeFile" accept="audio/*,video/mp4,.mp3,.wav,.m4a,.aac,.mp4" multiple hidden>
+  </section>
+
+  <section>
+    <div class="eyebrow"><h2>Mix</h2></div>
+    <div class="card" style="padding-block:4px 14px;">
+      <button class="tog" id="tgPolish" aria-pressed="true">
+        <span><span class="lab">Vocal polish</span><span class="sub">High-pass, compression, air, light room</span></span>
+        <span class="sw"><i></i></span>
+      </button>
+      <button class="tog" id="tgMonitor" aria-pressed="false">
+        <span><span class="lab">Voice monitor</span><span class="sub">Hear yourself while recording — headphones only</span></span>
+        <span class="sw"><i></i></span>
+      </button>
+      <button class="tog" id="tgCount" aria-pressed="true">
+        <span><span class="lab">Count-in</span><span class="sub">Four clicks before record rolls</span></span>
+        <span class="sw"><i></i></span>
+      </button>
+      <button class="tog" id="tgLoop" aria-pressed="false">
+        <span><span class="lab">Loop</span><span class="sub">Repeat the timeline on playback</span></span>
+        <span class="sw"><i></i></span>
+      </button>
+      <button class="tog" id="tgStems" aria-pressed="true">
+        <span><span class="lab">Include stems in export</span><span class="sub">Each take and the beat as its own file</span></span>
+        <span class="sw"><i></i></span>
+      </button>
+      <button class="btn solid wide" id="exportBtn" style="margin-top:14px;" disabled>Export session</button>
+      <div class="check-sub" id="exportNote" style="margin-top:9px;text-align:center;"></div>
+    </div>
+  </section>
+
+  <p class="note" id="footNote"></p>
+</div>
+
+<div class="bar">
+  <div class="bar-in">
+    <div class="scrub" id="scrub"><div class="track"><div class="fill" id="scrubFill"></div></div></div>
+    <div class="ctrls">
+      <span class="tc" id="tcNow">00:00.0</span>
+      <div class="pads">
+        <button class="pad" id="stopBtn" aria-label="Stop"><span class="sq"></span></button>
+        <button class="recbtn" id="recBtn" aria-label="Record"><i></i></button>
+        <button class="pad" id="playBtn" aria-label="Play" disabled><span class="tri"></span></button>
+      </div>
+      <span class="tc r" id="tcEnd">00:00.0</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================ helpers ============================ */
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+
+function fmt(t){
+  if(!isFinite(t)||t<0) t=0;
+  const m=Math.floor(t/60), s=Math.floor(t%60), d=Math.floor((t*10)%10);
+  return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0")+"."+d;
+}
+
+let toastTimer=0;
+function toast(msg,kind){
+  const old=document.querySelector(".toast"); if(old) old.remove();
+  const el=document.createElement("div");
+  el.className="toast"+(kind?" "+kind:"");
+  el.textContent=msg;
+  document.body.appendChild(el);
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>{ el.remove(); }, kind==="bad"?7000:4200);
+}
+
+/* ============================ audio utils ============================ */
+let ctx=null;
+function AC(){
+  if(!ctx){
+    const K=window.AudioContext||window.webkitAudioContext;
+    ctx=new K();
+  }
+  return ctx;
+}
+function decode(ab){
+  const c=AC();
+  return new Promise((res,rej)=>{
+    let done=false;
+    const ok=b=>{ if(!done){done=true;res(b);} };
+    const bad=e=>{ if(!done){done=true;rej(e||new Error("decode failed"));} };
+    try{
+      const p=c.decodeAudioData(ab,ok,bad);
+      if(p&&p.then) p.then(ok,bad);
+    }catch(e){ bad(e); }
+  });
+}
+
+function pickMime(){
+  if(!window.MediaRecorder) return "";
+  const t=["audio/mp4;codecs=mp4a.40.2","audio/mp4","audio/webm;codecs=opus","audio/webm","audio/aac","audio/ogg;codecs=opus"];
+  for(const m of t){ try{ if(MediaRecorder.isTypeSupported(m)) return m; }catch(e){} }
+  return "";
+}
+
+function impulse(c,sec,decay){
+  const n=Math.floor(c.sampleRate*sec), b=c.createBuffer(2,n,c.sampleRate);
+  for(let ch=0;ch<2;ch++){
+    const d=b.getChannelData(ch);
+    for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/n,decay);
+  }
+  return b;
+}
+
+/* Rap vocal chain: HPF -> de-boom -> presence -> air -> comp -> dry + short room */
+function vocalChain(c,wet){
+  wet = wet==null?0.11:wet;
+  const inn=c.createGain();
+  const hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=95; hp.Q.value=0.7;
+  const mud=c.createBiquadFilter(); mud.type="peaking"; mud.frequency.value=330; mud.Q.value=1.1; mud.gain.value=-2.4;
+  const pres=c.createBiquadFilter(); pres.type="peaking"; pres.frequency.value=2600; pres.Q.value=0.9; pres.gain.value=2.2;
+  const air=c.createBiquadFilter(); air.type="highshelf"; air.frequency.value=8200; air.gain.value=2.8;
+  const cmp=c.createDynamicsCompressor();
+  cmp.threshold.value=-21; cmp.knee.value=20; cmp.ratio.value=3.6;
+  cmp.attack.value=0.004; cmp.release.value=0.19;
+  const dry=c.createGain(); dry.gain.value=1-wet;
+  const wt=c.createGain(); wt.gain.value=wet;
+  const cv=c.createConvolver(); cv.buffer=impulse(c,1.1,3.6);
+  const out=c.createGain();
+  inn.connect(hp); hp.connect(mud); mud.connect(pres); pres.connect(air); air.connect(cmp);
+  cmp.connect(dry); dry.connect(out);
+  cmp.connect(cv); cv.connect(wt); wt.connect(out);
+  return {input:inn,out:out};
+}
+
+/* ============================ WAV + ZIP ============================ */
+function encodeWAV(buf){
+  const nc=Math.min(2,buf.numberOfChannels), sr=buf.sampleRate, len=buf.length;
+  const ba=nc*2, ds=len*ba, ab=new ArrayBuffer(44+ds), v=new DataView(ab);
+  const str=(o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i)); };
+  str(0,"RIFF"); v.setUint32(4,36+ds,true); str(8,"WAVE"); str(12,"fmt ");
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,nc,true);
+  v.setUint32(24,sr,true); v.setUint32(28,sr*ba,true); v.setUint16(32,ba,true); v.setUint16(34,16,true);
+  str(36,"data"); v.setUint32(40,ds,true);
+  const chs=[]; for(let c=0;c<nc;c++) chs.push(buf.getChannelData(c));
+  let o=44;
+  for(let i=0;i<len;i++){
+    for(let c=0;c<nc;c++){
+      let s=chs[c][i]; s=s<-1?-1:s>1?1:s;
+      v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true); o+=2;
+    }
+  }
+  return new Uint8Array(ab);
+}
+
+const CRCT=(()=>{ const t=new Uint32Array(256);
+  for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c=c&1?0xEDB88320^(c>>>1):c>>>1; t[n]=c>>>0; }
+  return t; })();
+function crc32(u8){
+  let c=0xFFFFFFFF;
+  for(let i=0;i<u8.length;i++) c=CRCT[(c^u8[i])&0xFF]^(c>>>8);
+  return (c^0xFFFFFFFF)>>>0;
+}
+/* Minimal ZIP, store method (no compression) — WAV barely compresses anyway. */
+function zipStore(files){
+  const enc=new TextEncoder(), parts=[], central=[];
+  let off=0;
+  const dt=new Date();
+  const time=((dt.getHours()<<11)|(dt.getMinutes()<<5)|(dt.getSeconds()/2))&0xFFFF;
+  const date=(((dt.getFullYear()-1980)<<9)|((dt.getMonth()+1)<<5)|dt.getDate())&0xFFFF;
+  for(const f of files){
+    const name=enc.encode(f.name), data=f.data, crc=crc32(data);
+    const lh=new ArrayBuffer(30), lv=new DataView(lh);
+    lv.setUint32(0,0x04034B50,true); lv.setUint16(4,20,true); lv.setUint16(6,0,true);
+    lv.setUint16(8,0,true); lv.setUint16(10,time,true); lv.setUint16(12,date,true);
+    lv.setUint32(14,crc,true); lv.setUint32(18,data.length,true); lv.setUint32(22,data.length,true);
+    lv.setUint16(26,name.length,true); lv.setUint16(28,0,true);
+    parts.push(new Uint8Array(lh),name,data);
+    const ch=new ArrayBuffer(46), cv=new DataView(ch);
+    cv.setUint32(0,0x02014B50,true); cv.setUint16(4,20,true); cv.setUint16(6,20,true);
+    cv.setUint16(8,0,true); cv.setUint16(10,0,true); cv.setUint16(12,time,true); cv.setUint16(14,date,true);
+    cv.setUint32(16,crc,true); cv.setUint32(20,data.length,true); cv.setUint32(24,data.length,true);
+    cv.setUint16(28,name.length,true); cv.setUint16(30,0,true); cv.setUint16(32,0,true);
+    cv.setUint16(34,0,true); cv.setUint16(36,0,true); cv.setUint32(38,0,true); cv.setUint32(42,off,true);
+    central.push(new Uint8Array(ch),name);
+    off+=30+name.length+data.length;
+  }
+  let cs=0; for(const p of central) cs+=p.length;
+  const eo=new ArrayBuffer(22), ev=new DataView(eo);
+  ev.setUint32(0,0x06054B50,true); ev.setUint16(4,0,true); ev.setUint16(6,0,true);
+  ev.setUint16(8,files.length,true); ev.setUint16(10,files.length,true);
+  ev.setUint32(12,cs,true); ev.setUint32(16,off,true); ev.setUint16(20,0,true);
+  return new Blob([...parts,...central,new Uint8Array(eo)],{type:"application/zip"});
+}
+
+/* ============================ auto-align ============================ */
+const FPS=100;
+function envelope(buf){
+  const d=buf.getChannelData(0), sr=buf.sampleRate;
+  const hop=Math.max(1,Math.floor(sr/FPS)), n=Math.floor(d.length/hop);
+  const e=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    let s=0; const b=i*hop;
+    for(let j=0;j<hop;j++){ const v=d[b+j]||0; s+=v*v; }
+    e[i]=Math.sqrt(s/hop);
+  }
+  /* log-compress so quiet bleed still registers, then keep only rising
+     edges — drum transients and consonants are what actually line up,
+     and an onset curve peaks far more sharply than a level curve. */
+  for(let i=0;i<n;i++) e[i]=Math.log(1+e[i]*60);
+  const o=new Float32Array(n);
+  for(let i=1;i<n;i++){ const d=e[i]-e[i-1]; o[i]=d>0?d:0; }
+  return o;
+}
+function stats(a,from,len){
+  let m=0,n=0;
+  for(let i=0;i<len;i++){ const v=a[from+i]; if(v===undefined) continue; m+=v; n++; }
+  if(!n) return null;
+  m/=n; let s=0;
+  for(let i=0;i<len;i++){ const v=a[from+i]; if(v===undefined) continue; s+=(v-m)*(v-m); }
+  s=Math.sqrt(s/n);
+  return {m:m,s:s||1e-9,n:n};
+}
+/* find lag (frames) that best aligns take envelope t onto beat envelope b at base offset */
+function bestLag(b,t,base,maxLag,step){
+  const none={lag:0,score:-2};
+  const len=Math.min(t.length, b.length-base+maxLag);
+  if(len<40) return none;
+  const ts=stats(t,0,Math.min(t.length,len));
+  if(!ts) return none;
+  const cands=[];
+  let peak=-2;
+  for(let L=-maxLag;L<=maxLag;L+=step){
+    const s0=base+L;
+    const from=Math.max(0,-s0);
+    const n=Math.min(t.length-from, b.length-(s0+from));
+    if(n<40) continue;
+    const bs=stats(b,s0+from,n); if(!bs) continue;
+    let acc=0;
+    for(let i=0;i<n;i++){
+      const tv=t[from+i], bv=b[s0+from+i];
+      if(tv===undefined||bv===undefined) continue;
+      acc+=(tv-ts.m)*(bv-bs.m);
+    }
+    /* Weight by how much of the take actually overlapped. Without this a
+       partial overlap can post a higher score than the true alignment
+       purely because it was scored on less evidence. */
+    const sc=(acc/(n*ts.s*bs.s))*(n/t.length);
+    cands.push({lag:L,score:sc});
+    if(sc>peak) peak=sc;
+  }
+  if(peak<=0) return {lag:0,score:peak};
+  /* A loop repeats, so a bar-length shift can score as well as the truth.
+     Among peaks that are statistically tied, take the nearest one —
+     musically the take is late by milliseconds, not by a whole bar. */
+  const thr=peak*0.97;
+  let best=null;
+  for(const c of cands){
+    if(c.score>=thr && (!best||Math.abs(c.lag)<Math.abs(best.lag))) best=c;
+  }
+  best=best||{lag:0,score:peak};
+  /* If a rival peak a bar away scores anywhere near as well, the beat is
+     too self-similar to be sure. Warn generously — a needless "check it"
+     costs nothing, a silent bar-error costs a whole take. This bar is
+     deliberately looser than the tie-break above: different job. */
+  let rival=false;
+  const warn=peak*0.93;
+  for(const c of cands){
+    if(c.score>=warn && Math.abs(c.lag-best.lag)>15){ rival=true; break; }
+  }
+  return {lag:best.lag, score:best.score, ambiguous:rival};
+}
+
+/* ---- sample-accurate alignment + beat-bleed removal ---- */
+function toMono(buf){
+  const n=buf.length, ch=buf.numberOfChannels, out=new Float32Array(n);
+  for(let c=0;c<ch;c++){
+    const d=buf.getChannelData(c);
+    for(let i=0;i<n;i++) out[i]+=d[i];
+  }
+  if(ch>1) for(let i=0;i<n;i++) out[i]/=ch;
+  return out;
+}
+/* refine alignment to the sample, using the take's loudest passages */
+function fineAlign(bm,tm,base,range,sr){
+  const win=Math.min(Math.floor(sr*0.45),tm.length);
+  if(win<2000) return 0;
+  const starts=[], seg=Math.floor(tm.length/3), hop=Math.floor(sr*0.1);
+  for(let k=0;k<3;k++){
+    let bi=-1,be=0;
+    const lim=Math.min((k+1)*seg,tm.length-win);
+    for(let s=k*seg;s<lim;s+=hop){
+      let e=0;
+      for(let i=0;i<win;i+=16) e+=tm[s+i]*tm[s+i];
+      if(e>be){ be=e; bi=s; }
+    }
+    if(bi>=0) starts.push(bi);
+  }
+  if(!starts.length) return 0;
+  let best=0,bs=-Infinity;
+  for(let d=-range;d<=range;d++){
+    let acc=0,bad=false;
+    for(const s of starts){
+      const b0=base+s+d;
+      if(b0<0||b0+win>=bm.length){ bad=true; break; }
+      for(let i=0;i<win;i+=2) acc+=tm[s+i]*bm[b0+i];
+    }
+    if(bad) continue;
+    if(acc>bs){ bs=acc; best=d; }
+  }
+  return best;
+}
+/* Subtract the beat that leaked into a take.
+   The speaker-to-mic path is a room, not a volume knob: it colours the
+   sound and smears it with reflections, so a simple scaled subtraction
+   cannot cancel it. This learns that path as an FIR filter with NLMS —
+   the same adaptive filter used for acoustic echo cancellation — and
+   subtracts what it predicts. The voice is uncorrelated with the beat,
+   so it survives while the leaked beat is cancelled. */
+async function removeBleed(t){
+  const sr=t.buffer.sampleRate;
+  const bm=toMono(S.beat.buffer), tm=toMono(t.buffer);
+  const base=Math.round((t.offset+t.nudge/1000)*sr);
+  const d=fineAlign(bm,tm,base,Math.round(sr*0.02),sr);
+  const off0=base+d;
+  const n=tm.length;
+
+  const L=384;                       /* ~9ms of room response */
+  const mu=0.22, eps=1e-7;
+  const h=new Float32Array(L);
+  const xb=new Float32Array(n+L);    /* padded beat so every tap index is valid */
+  for(let i=0;i<n;i++){
+    const v=bm[off0+i];
+    xb[L-1+i]= v===undefined?0:v;
+  }
+
+  const out=AC().createBuffer(1,n,sr);
+  const o=out.getChannelData(0);
+  let pow=eps;
+  for(let i=0;i<n;i++){
+    const head=L-1+i;
+    const xin=xb[head], xold=xb[head-L]||0;
+    pow+=xin*xin-xold*xold;
+    if(pow<eps) pow=eps;
+    let y=0;
+    for(let k=0;k<L;k++) y+=h[k]*xb[head-k];
+    const e=tm[i]-y;
+    o[i]=e;
+    const g=mu*e/pow;
+    for(let k=0;k<L;k++) h[k]+=g*xb[head-k];
+  }
+
+  /* measure after the filter has converged, not through the settling */
+  const skip=Math.min(Math.floor(sr*1.0),Math.floor(n/3));
+  let er=0,eo=0;
+  for(let i=skip;i<n;i++){ er+=tm[i]*tm[i]; eo+=o[i]*o[i]; }
+  const dB=(er>0&&eo>0)?10*Math.log10(eo/er):0;
+  return {buffer:out, shiftMs:(d/sr)*1000, dB:dB};
+}
+
+
+/* Tempo from the beat's own onset curve: autocorrelate and take the
+   strongest period. Used to shift a take by exact bars. */
+function detectBPM(env){
+  const n=env.length;
+  if(n<FPS*4) return 0;
+  const minL=Math.round(60/200*FPS), maxL=Math.round(60/60*FPS);
+  let m=0; for(let i=0;i<n;i++) m+=env[i]; m/=n;
+  let bestL=0,bs=-Infinity;
+  for(let L=minL;L<=maxL;L++){
+    let acc=0,cnt=0;
+    for(let i=0;i+L<n;i++){ acc+=(env[i]-m)*(env[i+L]-m); cnt++; }
+    if(!cnt) continue;
+    const sc=acc/cnt;
+    if(sc>bs){ bs=sc; bestL=L; }
+  }
+  if(!bestL) return 0;
+  let bpm=60*FPS/bestL;
+  while(bpm<70) bpm*=2;
+  while(bpm>180) bpm/=2;
+  return Math.round(bpm*10)/10;
+}
+function barSeconds(){
+  const bpm=S.beat&&S.beat.bpm;
+  return bpm?(4*60/bpm):0;
+}
+
+/* ============================ state ============================ */
+const S={
+  beat:null,                 // {name, buffer, blob}
+  takes:[],                  // {id,name,buffer,blob,mime,offset,nudge,gain,pan,mute,solo}
+  playing:false, recording:false, playhead:0,
+  beatVol:0.85, polish:true, monitor:false, countIn:true, loop:false, stems:true,
+  seq:0
+};
+const ENV={ framed:false, policy:null, perm:null, mime:"", secure:false, md:false, caps:null, host:"", micErr:"" };
+
+let stream=null, recorder=null, chunks=[], recMime="", micSrc=null, monGain=null, analyser=null;
+let live=[], t0=0, p0=0, recFrom=0, raf=0, mraf=0, beatEnv=null, saveTimer=0;
+
+/* ============================ persistence (IndexedDB) ============================ */
+const DB={ db:null, ok:false };
+function idbOpen(){
+  return new Promise(res=>{
+    let done=false; const fin=v=>{ if(!done){done=true;res(v);} };
+    setTimeout(()=>fin(null),2500);
+    try{
+      const r=indexedDB.open("booth_v2",1);
+      r.onupgradeneeded=()=>{ try{ r.result.createObjectStore("proj"); }catch(e){} };
+      r.onsuccess=()=>fin(r.result);
+      r.onerror=()=>fin(null);
+      r.onblocked=()=>fin(null);
+    }catch(e){ fin(null); }
+  });
+}
+function idbPut(k,v){
+  return new Promise(res=>{
+    if(!DB.db) return res(false);
+    try{
+      const tx=DB.db.transaction("proj","readwrite");
+      tx.objectStore("proj").put(v,k);
+      tx.oncomplete=()=>res(true); tx.onerror=()=>res(false); tx.onabort=()=>res(false);
+    }catch(e){ res(false); }
+  });
+}
+function idbGet(k){
+  return new Promise(res=>{
+    if(!DB.db) return res(null);
+    try{
+      const tx=DB.db.transaction("proj","readonly");
+      const rq=tx.objectStore("proj").get(k);
+      rq.onsuccess=()=>res(rq.result||null); rq.onerror=()=>res(null);
+    }catch(e){ res(null); }
+  });
+}
+function scheduleSave(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(saveProject,700);
+}
+async function saveProject(){
+  if(!DB.ok) return;
+  try{
+    await idbPut("current",{
+      beat: S.beat?{name:S.beat.name,blob:S.beat.blob,bpm:S.beat.bpm||0}:null,
+      beatVol:S.beat?S.beatVol:0.85,
+      polish:S.polish, countIn:S.countIn, loop:S.loop, stems:S.stems,
+      takes:S.takes.map(t=>({
+        name:t.name, blob:t.blob, mime:t.mime, offset:t.offset,
+        nudge:t.nudge, gain:t.gain, pan:t.pan, mute:t.mute, solo:t.solo,
+        procWav:t.procWav||null, bleedOff:!!t.bleedOff, recorded:!!t.recorded
+      }))
+    });
+  }catch(e){}
+}
+async function loadProject(){
+  if(!DB.ok) return false;
+  const p=await idbGet("current");
+  if(!p) return false;
+  let any=false;
+  try{
+    if(p.beat&&p.beat.blob){
+      const buf=await decode(await p.beat.blob.arrayBuffer());
+      S.beat={name:p.beat.name,buffer:buf,blob:p.beat.blob,bpm:p.beat.bpm||0};
+      beatEnv=null; any=true;
+    }
+    if(typeof p.beatVol==="number") S.beatVol=p.beatVol;
+    if(typeof p.polish==="boolean") S.polish=p.polish;
+    if(typeof p.countIn==="boolean") S.countIn=p.countIn;
+    if(typeof p.loop==="boolean") S.loop=p.loop;
+    if(typeof p.stems==="boolean") S.stems=p.stems;
+    if(Array.isArray(p.takes)){
+      for(const t of p.takes){
+        if(!t.blob) continue;
+        try{
+          const src=(t.bleedOff&&t.procWav)?t.procWav:t.blob;
+          const buf=await decode(await src.arrayBuffer());
+          S.takes.push({
+            id:++S.seq, name:t.name||("Take "+(S.takes.length+1)), buffer:buf, blob:t.blob,
+            mime:t.mime||"", offset:t.offset||0, nudge:t.nudge||0,
+            gain:typeof t.gain==="number"?t.gain:1, pan:t.pan||0,
+            mute:!!t.mute, solo:!!t.solo,
+            procWav:t.procWav||null, bleedOff:!!(t.bleedOff&&t.procWav),
+            recorded:!!t.recorded
+          });
+          any=true;
+        }catch(e){}
+      }
+    }
+  }catch(e){}
+  return any;
+}
+
+/* ============================ environment probe ============================ */
+function probeSync(){
+  ENV.framed = (function(){ try{ return window.self!==window.top; }catch(e){ return true; } })();
+  ENV.secure = !!window.isSecureContext;
+  ENV.md = !!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
+  ENV.mime = pickMime();
+  ENV.host = location.host||"(local)";
+  ENV.policy = (function(){
+    try{
+      const fp=document.featurePolicy||document.permissionsPolicy;
+      if(fp&&typeof fp.allowsFeature==="function") return !!fp.allowsFeature("microphone");
+    }catch(e){}
+    return null;
+  })();
+}
+async function probeAsync(){
+  try{
+    if(navigator.permissions&&navigator.permissions.query){
+      const st=await navigator.permissions.query({name:"microphone"});
+      ENV.perm=st.state;
+    }
+  }catch(e){ ENV.perm=null; }
+  try{
+    if(window.claude&&typeof window.claude.use==="function"){
+      const d=await window.claude.use("downloads");
+      ENV.caps = d?"granted":"null";
+      window.__dl = d||null;
+    } else {
+      ENV.caps="no window.claude";
+    }
+  }catch(e){ ENV.caps="error"; }
+}
+
+function micVerdict(){
+  if(!ENV.md) return {ok:false,why:"This browser has no microphone API."};
+  if(!ENV.secure) return {ok:false,why:"The page isn't on a secure connection."};
+  if(ENV.policy===false) return {ok:false,why:"frame"};
+  if(ENV.perm==="denied") return {ok:false,why:"Mic permission is denied for this site."};
+  return {ok:true,why:""};
+}
+
+function renderCheck(){
+  const v=micVerdict();
+  const mode=$("mode"), mt=$("modeTxt");
+  mode.className="mode "+(v.ok?"live":"mix");
+  mt.textContent = v.ok ? "record ready" : "mix only";
+
+  const title=$("ckTitle"), sub=$("ckSub");
+  if(v.ok){
+    title.textContent = ENV.perm==="granted" ? "Microphone ready" : "Microphone available";
+    sub.textContent = ENV.perm==="granted"
+      ? "Headphones on and hit the red button. Takes save to this device automatically."
+      : "Hit the red button and allow the microphone when your phone asks.";
+  } else if(v.why==="frame"){
+    title.textContent = "Recording is blocked in this window";
+    sub.textContent = "This copy of BOOTH is running inside the chat, and a page inside chat isn't allowed to reach the microphone — no phone setting changes that. Open BOOTH in its own window (the expand control on this artifact) and the mic prompt will fire. Everything else on this page works right here: import takes, align them, mix and export.";
+  } else {
+    title.textContent = "Recording unavailable";
+    sub.textContent = v.why + " You can still import takes, align them, mix and export.";
+  }
+
+  const rows=[
+    ["Window", ENV.framed?"inside chat":"own window", ENV.framed?"warn":"ok"],
+    ["Host", ENV.host, ""],
+    ["Secure", ENV.secure?"yes":"no", ENV.secure?"ok":"no"],
+    ["Mic API", ENV.md?"present":"missing", ENV.md?"ok":"no"],
+    ["Frame policy", ENV.policy===null?"not reported":(ENV.policy?"mic allowed":"mic blocked"),
+       ENV.policy===null?"":(ENV.policy?"ok":"no")],
+    ["Permission", ENV.perm||"not asked yet", ENV.perm==="granted"?"ok":(ENV.perm==="denied"?"no":"")],
+    ["Recorder", ENV.mime||"none", ENV.mime?"ok":"no"],
+    ["Saving", DB.ok?"on this device":"session only", DB.ok?"ok":"warn"],
+    ["Claude downloads", ENV.caps||"—", ENV.caps==="granted"?"ok":"warn"]
+  ];
+  if(ENV.micErr) rows.push(["Last mic error",ENV.micErr,"no"]);
+  $("ckRows").innerHTML = rows.map(r=>
+    '<div class="row"><span class="k">'+r[0]+'</span><span class="v '+(r[2]||"")+'">'+
+    String(r[1]).replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))+'</span></div>'
+  ).join("");
+
+  $("recBtn").disabled = !v.ok;
+  $("footNote").textContent = v.ok
+    ? "Headphones are required — they keep the beat out of your mic · takes are saved on this device, export to keep them anywhere else · if a take sits off the beat, hit ALIGN or slide SYNC"
+    : "Import path, three steps: play the beat out loud and rap over it into Voice Memos · import that take here · hit ALIGN TO BEAT, then REMOVE BLEED — BOOTH locks it to the grid and subtracts the beat that leaked into your mic.";
+}
+
+/* ============================ timeline ============================ */
+function duration(){
+  let m = S.beat?S.beat.buffer.duration:0;
+  for(const t of S.takes){
+    const e=t.offset+t.nudge/1000+t.buffer.duration;
+    if(e>m) m=e;
+  }
+  return Math.max(m,0.5);
+}
+
+function drawWave(cv,buf,color,from,to){
+  const w=cv.clientWidth||cv.parentElement.clientWidth||300;
+  const h=cv.clientHeight||46;
+  if(!w||!h) return;
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  cv.width=Math.max(1,Math.floor(w*dpr)); cv.height=Math.max(1,Math.floor(h*dpr));
+  const g=cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,w,h);
+  const d=buf.getChannelData(0);
+  const a=Math.floor((from||0)*buf.sampleRate);
+  const b=Math.floor((to==null?buf.duration:to)*buf.sampleRate);
+  const n=Math.max(1,b-a);
+  const step=Math.max(1,Math.floor(n/w));
+  const mid=h/2;
+  g.fillStyle=color;
+  for(let x=0;x<w;x++){
+    let lo=1,hi=-1, base=a+x*step;
+    for(let i=0;i<step;i++){ const v=d[base+i]; if(v===undefined) continue; if(v<lo)lo=v; if(v>hi)hi=v; }
+    if(lo>hi){ lo=0; hi=0; }
+    const y1=mid-hi*mid*0.92, y2=mid-lo*mid*0.92;
+    g.fillRect(x,y1,1,Math.max(1,y2-y1));
+  }
+}
+
+function drawRuler(){
+  const el=$("ruler"), d=duration();
+  const w=el.clientWidth||320;
+  const targets=[1,2,5,10,15,20,30,60,120];
+  let step=targets[targets.length-1];
+  for(const t of targets){ if(d/t<=Math.max(3,Math.floor(w/58))){ step=t; break; } }
+  let html="";
+  for(let t=0;t<=d;t+=step){
+    const pct=(t/d)*100;
+    if(pct>97) break;
+    html+='<span style="left:'+pct.toFixed(3)+'%">'+fmt(t).slice(0,5)+'</span>';
+  }
+  el.innerHTML=html;
+}
+
+function renderBeat(){
+  const has=!!S.beat;
+  $("beatDash").hidden=has;
+  $("beatBody").hidden=!has;
+  $("beatMeta").textContent = has?(fmt(S.beat.buffer.duration)+(S.beat.bpm?"  ·  "+S.beat.bpm+" BPM":"")):"";
+  if(!has) return;
+  $("beatName").textContent=S.beat.name;
+  $("beatVol").value=S.beatVol;
+  $("beatVolV").textContent=Math.round(S.beatVol*100);
+  drawRuler();
+  const d=duration(), bd=S.beat.buffer.duration;
+  const cv=$("beatCv");
+  cv.style.width=((bd/d)*100).toFixed(3)+"%";
+  requestAnimationFrame(()=>drawWave(cv,S.beat.buffer,"#7E7666"));
+}
+
+function takeRow(t,i){
+  const d=duration();
+  const start=Math.max(0,t.offset+t.nudge/1000);
+  const left=(start/d)*100;
+  const width=Math.min(100-left,(t.buffer.duration/d)*100);
+  const soloOn=S.takes.some(x=>x.solo);
+  const off=(soloOn&&!t.solo)||t.mute;
+  const el=document.createElement("div");
+  el.className="take"+(t.solo?" solo":"")+(off?" off":"");
+  el.dataset.id=t.id;
+  el.innerHTML=
+    '<div class="take-head">'+
+      '<input class="take-name" value="'+String(t.name).replace(/"/g,"&quot;")+'" data-act="name" aria-label="Take name">'+
+      '<button class="mini'+(t.mute?" on red":"")+'" data-act="mute" title="Mute">M</button>'+
+      '<button class="mini'+(t.solo?" on":"")+'" data-act="solo" title="Solo">S</button>'+
+      '<button class="mini" data-act="del" title="Delete take">✕</button>'+
+    '</div>'+
+    '<div class="lane" data-lane>'+
+      '<div class="clip" style="left:'+left.toFixed(3)+'%;width:'+Math.max(0.6,width).toFixed(3)+'%"><canvas></canvas></div>'+
+      '<div class="head" data-head></div>'+
+    '</div>'+
+    '<div class="knobs">'+
+      '<div class="knob"><span class="k">Level</span>'+
+        '<input type="range" class="red" min="0" max="1.5" step="0.01" value="'+t.gain+'" data-act="gain">'+
+        '<span class="v">'+Math.round(t.gain*100)+'</span></div>'+
+      '<div class="knob"><span class="k">Pan</span>'+
+        '<input type="range" min="-1" max="1" step="0.02" value="'+t.pan+'" data-act="pan">'+
+        '<span class="v'+(t.pan?" set":"")+'">'+(t.pan===0?"C":(t.pan<0?"L":"R")+Math.round(Math.abs(t.pan)*100))+'</span></div>'+
+      '<div class="knob"><span class="k">Sync</span>'+
+        '<input type="range" min="-600" max="600" step="5" value="'+t.nudge+'" data-act="nudge">'+
+        '<span class="v'+(t.nudge?" set":"")+'">'+(t.nudge>0?"+":"")+t.nudge+'ms</span></div>'+
+    '</div>'+
+    '<div class="acts">'+
+      '<button class="btn sm" data-act="barback" title="Back one bar">&#9664; Bar</button>'+
+      '<button class="btn sm" data-act="align">Align</button>'+
+      '<button class="btn sm" data-act="barfwd" title="Forward one bar">Bar &#9654;</button>'+
+    '</div>'+
+    '<div class="acts">'+
+      '<button class="btn sm'+(t.bleedOff?" done":"")+'" data-act="bleed">'+
+        (t.bleedOff?"Restore original take":"Remove beat bleed")+'</button>'+
+    '</div>';
+  const cv=el.querySelector("canvas");
+  requestAnimationFrame(()=>drawWave(cv,t.buffer,"#F04E23"));
+  return el;
+}
+
+function renderTakes(){
+  const list=$("takeList");
+  list.innerHTML="";
+  $("takeMeta").textContent = S.takes.length?(S.takes.length+(S.takes.length===1?" take":" takes")):"";
+  if(!S.takes.length){
+    const e=document.createElement("div");
+    e.className="card";
+    e.innerHTML='<div class="empty">No takes yet.<br>Import a take you cut somewhere else, or record with the red button where recording is allowed.<br>Each take stacks — verse first, then doubles and ad-libs.</div>';
+    list.appendChild(e);
+    return;
+  }
+  const frag=document.createDocumentFragment();
+  S.takes.forEach((t,i)=>frag.appendChild(takeRow(t,i)));
+  list.appendChild(frag);
+}
+
+function renderAll(){
+  renderBeat(); renderTakes(); renderMix(); renderHeads();
+}
+function renderMix(){
+  const has=!!S.beat||S.takes.length>0;
+  $("exportBtn").disabled=!has;
+  $("playBtn").disabled=!has;
+  $("tcEnd").textContent=S.recording?"REC":fmt(duration());
+  $("exportNote").textContent = has
+    ? (S.stems?"A .zip holding mix.wav plus every stem":"A .zip holding mix.wav")
+    : "Load a beat or a take first";
+  setTog("tgPolish",S.polish); setTog("tgMonitor",S.monitor);
+  setTog("tgCount",S.countIn); setTog("tgLoop",S.loop); setTog("tgStems",S.stems);
+}
+function setTog(id,on){ $(id).setAttribute("aria-pressed",on?"true":"false"); }
+
+function renderHeads(){
+  const d=duration(), pct=clamp(S.playhead/d,0,1)*100;
+  $("scrubFill").style.width=pct+"%";
+  $("tcNow").textContent=fmt(S.playhead);
+  $("tcNow").className="tc"+(S.recording?" on":"");
+  if(S.beat){
+    const bd=S.beat.buffer.duration;
+    const bh=$("beatHead");
+    bh.style.left=clamp(S.playhead/bd,0,1)*100+"%";
+    bh.className="head"+(S.recording?" rec":"");
+  }
+  document.querySelectorAll("[data-head]").forEach(h=>{
+    h.style.left=pct+"%";
+    h.className="head"+(S.recording?" rec":"");
+  });
+}
+
+/* ============================ playback ============================ */
+function stopSources(){
+  for(const s of live){ try{ s.stop(); }catch(e){} }
+  live=[];
+}
+function tick(){
+  if(!ctx) return;
+  const pos=p0+(ctx.currentTime-t0);
+  const d=duration();
+  if(pos>=d){
+    stopSources();
+    if(S.loop&&!S.recording){ play(0); return; }
+    S.playing=false; S.playhead=S.recording?pos:0;
+    if(!S.recording){ renderHeads(); renderMix(); setPlayIcon(); return; }
+  }
+  S.playhead=Math.min(pos,S.recording?pos:d);
+  renderHeads();
+  raf=requestAnimationFrame(tick);
+}
+
+async function play(from){
+  const c=AC();
+  try{ await c.resume(); }catch(e){}
+  stopSources();
+  const lead=0.09, at=c.currentTime+lead;
+  t0=at; p0=from;
+  const soloOn=S.takes.some(x=>x.solo);
+
+  if(S.beat&&from<S.beat.buffer.duration){
+    const s=c.createBufferSource(); s.buffer=S.beat.buffer;
+    const g=c.createGain(); g.gain.value=S.beatVol;
+    s.connect(g); g.connect(c.destination);
+    s.start(at,Math.max(0,from)); live.push(s);
+  }
+  for(const t of S.takes){
+    if(t.mute||(soloOn&&!t.solo)) continue;
+    const s=c.createBufferSource(); s.buffer=t.buffer;
+    const g=c.createGain(); g.gain.value=t.gain;
+    let node=s;
+    if(S.polish){ const ch=vocalChain(c); s.connect(ch.input); node=ch.out; }
+    let pan=null;
+    if(c.createStereoPanner){ pan=c.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
+    if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
+    g.connect(c.destination);
+    const clip=t.offset+t.nudge/1000;
+    const when=at+(clip-from);
+    if(when>=at){ s.start(when,0); }
+    else{
+      const into=from-clip;
+      if(into>=t.buffer.duration) continue;
+      s.start(at,into);
+    }
+    live.push(s);
+  }
+  S.playing=true; setPlayIcon();
+  cancelAnimationFrame(raf); raf=requestAnimationFrame(tick);
+}
+function pause(){
+  stopSources(); cancelAnimationFrame(raf);
+  S.playing=false; setPlayIcon();
+}
+function stopAll(){
+  stopSources(); cancelAnimationFrame(raf);
+  S.playing=false; S.playhead=0; setPlayIcon(); renderHeads();
+}
+function setPlayIcon(){
+  const b=$("playBtn");
+  b.innerHTML = S.playing
+    ? '<span class="pause"><i></i><i></i></span>'
+    : '<span class="tri"></span>';
+  b.setAttribute("aria-label",S.playing?"Pause":"Play");
+}
+
+/* ============================ metering ============================ */
+function meterTick(){
+  if(!analyser) return;
+  const b=new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(b);
+  let s=0;
+  for(let i=0;i<b.length;i++){ const v=(b[i]-128)/128; s+=v*v; }
+  const rms=Math.sqrt(s/b.length), lvl=clamp(rms*2.3,0,1);
+  const f=$("meterFill");
+  f.style.width=(lvl*100)+"%";
+  f.style.background = lvl>0.88?"var(--rec)":lvl>0.62?"var(--brass)":"var(--go)";
+  mraf=requestAnimationFrame(meterTick);
+}
+function stopMeter(){
+  cancelAnimationFrame(mraf);
+  const f=$("meterFill"); f.style.width="0%";
+}
+
+/* ============================ recording ============================ */
+function countIn(c){
+  return new Promise(res=>{
+    const ov=document.createElement("div");
+    ov.className="over";
+    ov.innerHTML='<div class="lab">Get ready</div><div class="big">4</div><div class="msg">headphones on</div>';
+    document.body.appendChild(ov);
+    const big=ov.querySelector(".big");
+    let n=4;
+    const beep=last=>{
+      const o=c.createOscillator(), g=c.createGain();
+      o.frequency.value=last?1050:690; o.type="square";
+      o.connect(g); g.connect(c.destination);
+      const t=c.currentTime;
+      g.gain.setValueAtTime(0.0001,t);
+      g.gain.exponentialRampToValueAtTime(0.26,t+0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+0.14);
+      o.start(t); o.stop(t+0.16);
+    };
+    beep(false); n--;
+    const iv=setInterval(()=>{
+      if(n<=0){ clearInterval(iv); ov.remove(); res(); return; }
+      big.textContent=n; beep(n===1); n--;
+    },520);
+  });
+}
+
+async function getMic(){
+  if(stream) return stream;
+  stream=await navigator.mediaDevices.getUserMedia({
+    audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}
+  });
+  return stream;
+}
+
+async function startRec(){
+  const c=AC();
+  try{ await c.resume(); }catch(e){}
+  let st;
+  try{ st=await getMic(); }
+  catch(e){
+    ENV.micErr=(e&&(e.name||e.message))||"failed";
+    ENV.perm="denied";
+    renderCheck();
+    toast(ENV.policy===false
+      ? "This window can't reach the microphone. Open BOOTH in its own window to record."
+      : "Microphone refused: "+ENV.micErr, "bad");
+    return;
+  }
+  ENV.perm="granted"; ENV.micErr=""; renderCheck();
+
+  micSrc=c.createMediaStreamSource(st);
+  analyser=c.createAnalyser(); analyser.fftSize=512;
+  micSrc.connect(analyser);
+  if(S.monitor){
+    monGain=c.createGain(); monGain.gain.value=0.8;
+    micSrc.connect(monGain); monGain.connect(c.destination);
+  }
+  cancelAnimationFrame(mraf); mraf=requestAnimationFrame(meterTick);
+
+  if(S.countIn) await countIn(c);
+
+  recMime=ENV.mime;
+  try{ recorder=new MediaRecorder(st,recMime?{mimeType:recMime}:undefined); }
+  catch(e){
+    try{ recorder=new MediaRecorder(st); recMime=recorder.mimeType||""; }
+    catch(e2){ toast("This browser can't record audio.","bad"); return; }
+  }
+  chunks=[];
+  recorder.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
+  recorder.onstop=finishRec;
+  recFrom=S.playhead;
+  recorder.start();
+  S.recording=true;
+  $("recBtn").classList.add("on");
+  $("recBtn").setAttribute("aria-label","Stop recording");
+  renderMix();
+  play(recFrom);
+}
+
+function stopRec(){
+  try{ recorder&&recorder.state!=="inactive"&&recorder.stop(); }catch(e){}
+  stopSources(); cancelAnimationFrame(raf);
+  S.playing=false; setPlayIcon();
+}
+
+async function finishRec(){
+  S.recording=false;
+  $("recBtn").classList.remove("on");
+  $("recBtn").setAttribute("aria-label","Record");
+  stopMeter();
+  if(monGain){ try{ monGain.disconnect(); }catch(e){} monGain=null; }
+  const blob=new Blob(chunks,{type:recMime||"audio/webm"});
+  chunks=[];
+  if(!blob.size){ toast("That take came back empty — nothing was captured.","bad"); return; }
+  try{
+    const buf=await decode(await blob.arrayBuffer());
+    addTake(buf,blob,recMime,recFrom,"Take "+(S.takes.length+1),true);
+    toast("Take "+S.takes.length+" captured — "+fmt(buf.duration).slice(0,5)+". Hit ALIGN if it sits off the beat.","good");
+  }catch(e){
+    toast("Couldn't read that take back: "+(e.message||e),"bad");
+  }
+  S.playhead=0; renderAll(); renderHeads();
+}
+
+function addTake(buffer,blob,mime,offset,name,recorded){
+  S.takes.push({
+    id:++S.seq,name:name,buffer:buffer,blob:blob,mime:mime||"",
+    offset:offset||0,nudge:0,gain:1,pan:0,mute:false,solo:false,
+    recorded:!!recorded
+  });
+  renderAll(); scheduleSave();
+}
+
+/* ============================ align ============================ */
+function alignTake(t){
+  if(!S.beat){ toast("Load the beat first — align needs something to line up against.","bad"); return; }
+  if(!beatEnv){ beatEnv=envelope(S.beat.buffer); if(!S.beat.bpm) S.beat.bpm=detectBPM(beatEnv); }
+  const te=envelope(t.buffer);
+  const base=Math.round(t.offset*FPS);
+  /* A take cut here can only drift by input latency, so search tight and
+     stay immune to bar-jumps. An imported take could start anywhere. */
+  const span=t.recorded?Math.round(0.6*FPS):Math.round(1.5*FPS);
+  const coarse=bestLag(beatEnv,te,base,span,4);
+  const fine=bestLag(beatEnv,te,base+coarse.lag,6,1);
+  if(coarse.score<0.12){
+    toast("Couldn't hear the beat inside that take, so there's nothing to lock onto. Slide SYNC by ear instead.","bad");
+    return;
+  }
+  let ms=((coarse.lag+fine.lag)/FPS)*1000;
+  /* refine to the sample so bleed removal has something exact to work with */
+  try{
+    const sr=t.buffer.sampleRate;
+    const bm=toMono(S.beat.buffer), tm=toMono(t.buffer);
+    const base=Math.round((t.offset+ms/1000)*sr);
+    const d=fineAlign(bm,tm,base,Math.round(sr*0.012),sr);
+    ms+=(d/sr)*1000;
+  }catch(e){}
+  t.nudge=clamp(Math.round(ms),-600,600);
+  renderAll(); scheduleSave();
+  toast(coarse.ambiguous
+    ? "Aligned "+t.name+" to "+(t.nudge>0?"+":"")+t.nudge+"ms, but this beat loops so cleanly that a whole bar off scores the same. Play it back — if it's out, slide SYNC by one bar."
+    : "Aligned "+t.name+" — moved "+(t.nudge>0?"+":"")+t.nudge+"ms, match "+Math.round(coarse.score*100)+"%.","good");
+}
+
+async function bleedTake(t,btn){
+  if(!S.beat){ toast("Load the beat first — there's nothing to subtract without it.","bad"); return; }
+  if(t.bleedOff){
+    try{
+      t.buffer=await decode(await t.blob.arrayBuffer());
+      t.bleedOff=false; t.procWav=null;
+      renderAll(); scheduleSave();
+      toast("Restored the original take.");
+    }catch(e){ toast("Couldn't restore that take.","bad"); }
+    return;
+  }
+  const old=btn?btn.textContent:"";
+  if(btn){ btn.textContent="Working…"; btn.disabled=true; }
+  try{
+    const r=await removeBleed(t);
+    t.buffer=r.buffer; t.bleedOff=true;
+    try{ t.procWav=new Blob([encodeWAV(r.buffer)],{type:"audio/wav"}); }catch(e){ t.procWav=null; }
+    renderAll(); scheduleSave();
+    toast("Bleed pulled down "+Math.abs(r.dB).toFixed(1)+"dB on "+t.name+". Solo it to hear what's left.","good");
+  }catch(e){
+    if(btn){ btn.textContent=old; btn.disabled=false; }
+    toast("Bleed removal failed: "+(e.message||e),"bad");
+  }
+}
+
+/* ============================ export ============================ */
+async function renderMixBuffer(withTakesOnly){
+  const c=AC(), sr=c.sampleRate, total=duration();
+  const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
+  const off=new OAC(2,Math.max(1,Math.ceil(total*sr)),sr);
+  const soloOn=S.takes.some(x=>x.solo);
+  if(S.beat&&!withTakesOnly){
+    const s=off.createBufferSource(); s.buffer=S.beat.buffer;
+    const g=off.createGain(); g.gain.value=S.beatVol;
+    s.connect(g); g.connect(off.destination); s.start(0,0);
+  }
+  for(const t of S.takes){
+    if(t.mute||(soloOn&&!t.solo)) continue;
+    const s=off.createBufferSource(); s.buffer=t.buffer;
+    const g=off.createGain(); g.gain.value=t.gain;
+    let node=s;
+    if(S.polish){ const ch=vocalChain(off); s.connect(ch.input); node=ch.out; }
+    let pan=null;
+    if(off.createStereoPanner){ pan=off.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
+    if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
+    g.connect(off.destination);
+    s.start(Math.max(0,t.offset+t.nudge/1000),0);
+  }
+  return await off.startRendering();
+}
+
+async function renderStem(t){
+  const c=AC(), sr=c.sampleRate, total=duration();
+  const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
+  const off=new OAC(2,Math.max(1,Math.ceil(total*sr)),sr);
+  const s=off.createBufferSource(); s.buffer=t.buffer;
+  const g=off.createGain(); g.gain.value=t.gain;
+  let node=s;
+  if(S.polish){ const ch=vocalChain(off); s.connect(ch.input); node=ch.out; }
+  let pan=null;
+  if(off.createStereoPanner){ pan=off.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
+  if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
+  g.connect(off.destination);
+  s.start(Math.max(0,t.offset+t.nudge/1000),0);
+  return await off.startRendering();
+}
+
+function safeName(s){
+  return String(s||"booth").replace(/\.[^.]+$/,"").replace(/[^\w\- ]+/g,"").trim().replace(/\s+/g,"_").slice(0,40)||"booth";
+}
+
+async function doExport(){
+  const btn=$("exportBtn"), old=btn.textContent;
+  btn.disabled=true; btn.textContent="Rendering…";
+  try{
+    const base=safeName(S.beat?S.beat.name:"booth");
+    const files=[];
+    const mix=await renderMixBuffer(false);
+    files.push({name:base+"_mix.wav",data:encodeWAV(mix)});
+    if(S.stems){
+      if(S.beat) files.push({name:"stems/beat.wav",data:encodeWAV(S.beat.buffer)});
+      for(let i=0;i<S.takes.length;i++){
+        const t=S.takes[i];
+        btn.textContent="Rendering stem "+(i+1)+"/"+S.takes.length+"…";
+        const b=await renderStem(t);
+        files.push({name:"stems/"+String(i+1).padStart(2,"0")+"_"+safeName(t.name)+".wav",data:encodeWAV(b)});
+      }
+    }
+    const notes=
+      "BOOTH session\n"+
+      "beat: "+(S.beat?S.beat.name:"(none)")+"\n"+
+      "length: "+fmt(duration())+"\n"+
+      "takes: "+S.takes.length+"\n"+
+      "vocal polish: "+(S.polish?"on":"off")+"\n\n"+
+      S.takes.map((t,i)=>(i+1)+". "+t.name+" — start "+fmt(t.offset)+", sync "+(t.nudge>0?"+":"")+t.nudge+
+        "ms, level "+Math.round(t.gain*100)+", pan "+(t.pan===0?"C":(t.pan<0?"L":"R")+Math.round(Math.abs(t.pan)*100))+
+        (t.mute?", muted":"")).join("\n")+"\n";
+    files.push({name:"session.txt",data:new TextEncoder().encode(notes)});
+
+    btn.textContent="Packing…";
+    const zip=zipStore(files);
+    const fname=base+"_booth.zip";
+
+    if(window.__dl&&window.__dl.save){
+      try{
+        await window.__dl.save({filename:fname,data:zip});
+        toast("Saved "+fname+" — unzip it for mix.wav"+(S.stems?" and the stems":"")+".","good");
+      }catch(err){
+        const code=err&&err.code;
+        if(code==="declined") toast("Export cancelled.");
+        else if(code==="too_large") toast("That mix is too big for this window. Turn stems off and try again.","bad");
+        else { blobDownload(zip,fname); }
+      }
+    } else {
+      blobDownload(zip,fname);
+    }
+  }catch(e){
+    toast("Export failed: "+(e.message||e),"bad");
+  }
+  btn.textContent=old; btn.disabled=false;
+}
+
+function blobDownload(blob,name){
+  try{
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=name; a.rel="noopener";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),8000);
+    toast("Saved "+name+" — open it in Files and unzip for your WAVs.","good");
+  }catch(e){
+    toast("The browser blocked that download. Allow downloads for this site and export again.","bad");
+  }
+}
+
+/* ============================ file loading ============================ */
+async function loadBeatFile(file){
+  try{
+    const blob=file.slice(0,file.size,file.type||"audio/mpeg");
+    const buf=await decode(await file.arrayBuffer());
+    S.beat={name:file.name,buffer:buf,blob:blob};
+    beatEnv=null;
+    S.playhead=0; stopAll(); renderAll(); scheduleSave();
+    toast("Beat loaded — "+fmt(buf.duration).slice(0,5)+".","good");
+  }catch(e){
+    toast("Couldn't read that beat. Try an mp3, wav or m4a export.","bad");
+  }
+}
+async function loadTakeFiles(files){
+  let n=0;
+  for(const f of files){
+    try{
+      const blob=f.slice(0,f.size,f.type||"audio/mpeg");
+      const buf=await decode(await f.arrayBuffer());
+      addTake(buf,blob,f.type||"",0,safeName(f.name).replace(/_/g," ").slice(0,24)||"Import "+(S.takes.length+1));
+      n++;
+    }catch(e){}
+  }
+  if(n) toast(n+(n===1?" take imported":" takes imported")+" at 00:00 — hit ⊹ ALIGN to lock "+(n===1?"it":"them")+" to the beat.","good");
+  else toast("Couldn't read that file as audio.","bad");
+}
+
+/* ============================ events ============================ */
+$("beatDash").addEventListener("click",()=>$("beatFile").click());
+$("beatSwap").addEventListener("click",()=>$("beatFile").click());
+$("beatFile").addEventListener("change",e=>{
+  const f=e.target.files&&e.target.files[0];
+  if(f) loadBeatFile(f);
+  e.target.value="";
+});
+$("importTake").addEventListener("click",()=>$("takeFile").click());
+$("takeFile").addEventListener("change",e=>{
+  const fs=Array.from(e.target.files||[]);
+  if(fs.length) loadTakeFiles(fs);
+  e.target.value="";
+});
+$("clearTakes").addEventListener("click",()=>{
+  if(!S.takes.length) return;
+  S.takes=[]; stopAll(); renderAll(); scheduleSave();
+  toast("All takes cleared.");
+});
+$("beatVol").addEventListener("input",e=>{
+  S.beatVol=parseFloat(e.target.value);
+  $("beatVolV").textContent=Math.round(S.beatVol*100);
+  scheduleSave();
+});
+
+$("takeList").addEventListener("click",e=>{
+  const row=e.target.closest(".take"); if(!row) return;
+  const t=S.takes.find(x=>x.id==row.dataset.id); if(!t) return;
+  const btn=e.target.closest("[data-act]");
+
+  /* Tap anywhere on a take's lane to drop its start there. This is how a
+     take that begins ten seconds before the beat gets into range — ALIGN
+     only refines, it can't search the whole song. */
+  if(!btn){
+    const lane=e.target.closest("[data-lane]");
+    if(lane){
+      const r=lane.getBoundingClientRect();
+      const frac=clamp((e.clientX-r.left)/r.width,0,1);
+      t.offset=frac*duration(); t.nudge=0;
+      renderAll(); scheduleSave();
+      toast(t.name+" starts at "+fmt(t.offset)+" now. Hit ALIGN to lock it to the grid.");
+    }
+    return;
+  }
+  if(btn.tagName==="INPUT") return;
+  const act=btn.dataset.act;
+  if(act==="mute"){ t.mute=!t.mute; renderAll(); scheduleSave(); }
+  else if(act==="solo"){ t.solo=!t.solo; renderAll(); scheduleSave(); }
+  else if(act==="align"){ alignTake(t); }
+  else if(act==="bleed"){ bleedTake(t,btn); }
+  else if(act==="barback"||act==="barfwd"){
+    const bs=barSeconds();
+    if(!bs){ toast("Couldn't read this beat's tempo, so bar moves are off. Use SYNC instead.","bad"); return; }
+    t.offset=Math.max(0,t.offset+(act==="barfwd"?bs:-bs));
+    renderAll(); scheduleSave();
+    toast(t.name+" moved "+(act==="barfwd"?"forward":"back")+" one bar — now starting at "+fmt(t.offset)+".");
+  }
+  else if(act==="del"){
+    S.takes=S.takes.filter(x=>x.id!==t.id);
+    renderAll(); scheduleSave();
+  }
+});
+$("takeList").addEventListener("input",e=>{
+  const inp=e.target.closest("[data-act]"); if(!inp) return;
+  const row=e.target.closest(".take"); if(!row) return;
+  const t=S.takes.find(x=>x.id==row.dataset.id); if(!t) return;
+  const act=inp.dataset.act, v=inp.value;
+  const vEl=inp.parentElement?inp.parentElement.querySelector(".v"):null;
+  if(act==="gain"){ t.gain=parseFloat(v); if(vEl) vEl.textContent=Math.round(t.gain*100); }
+  else if(act==="pan"){
+    t.pan=parseFloat(v);
+    if(vEl){ vEl.textContent=t.pan===0?"C":(t.pan<0?"L":"R")+Math.round(Math.abs(t.pan)*100);
+             vEl.className="v"+(t.pan?" set":""); }
+  }
+  else if(act==="nudge"){
+    t.nudge=parseInt(v,10);
+    if(vEl){ vEl.textContent=(t.nudge>0?"+":"")+t.nudge+"ms"; vEl.className="v"+(t.nudge?" set":""); }
+    const clip=row.querySelector(".clip");
+    if(clip){
+      const d=duration(), start=Math.max(0,t.offset+t.nudge/1000);
+      clip.style.left=((start/d)*100).toFixed(3)+"%";
+    }
+  }
+  else if(act==="name"){ t.name=inp.value.slice(0,30); }
+  scheduleSave();
+});
+
+function bindTog(id,key,after){
+  $(id).addEventListener("click",()=>{
+    S[key]=!S[key]; setTog(id,S[key]);
+    if(after) after();
+    renderMix(); scheduleSave();
+  });
+}
+bindTog("tgPolish","polish",()=>{ if(S.playing) play(S.playhead); });
+bindTog("tgMonitor","monitor");
+bindTog("tgCount","countIn");
+bindTog("tgLoop","loop");
+bindTog("tgStems","stems");
+
+$("exportBtn").addEventListener("click",doExport);
+$("stopBtn").addEventListener("click",()=>{ if(S.recording) stopRec(); else stopAll(); });
+$("playBtn").addEventListener("click",()=>{ if(S.recording) return; S.playing?pause():play(S.playhead); });
+$("recBtn").addEventListener("click",()=>{ S.recording?stopRec():startRec(); });
+$("scrub").addEventListener("click",e=>{
+  if(S.recording) return;
+  const r=e.currentTarget.getBoundingClientRect();
+  const pos=clamp((e.clientX-r.left)/r.width,0,1)*duration();
+  if(S.playing) play(pos); else { S.playhead=pos; renderHeads(); }
+});
+$("recheck").addEventListener("click",async()=>{
+  probeSync(); await probeAsync(); renderCheck();
+  toast("Signal check re-run.");
+});
+
+let rz=0;
+window.addEventListener("resize",()=>{
+  clearTimeout(rz);
+  rz=setTimeout(()=>{ renderBeat(); renderTakes(); renderHeads(); },180);
+});
+document.addEventListener("keydown",e=>{
+  if(e.target&&/INPUT|TEXTAREA/.test(e.target.tagName)) return;
+  if(e.code==="Space"){ e.preventDefault(); if(!S.recording){ S.playing?pause():play(S.playhead); } }
+});
+
+/* ============================ boot ============================ */
+(async function boot(){
+  probeSync();
+  renderCheck();
+  renderAll();
+  setPlayIcon();
+
+  DB.db=await idbOpen(); DB.ok=!!DB.db;
+  const restored=await loadProject();
+  if(restored){ renderAll(); toast("Picked your session back up where you left it."); }
+
+  await probeAsync();
+  renderCheck();
+})();
+
+
+
+
+
+
+
+
+
+
+
+
+
+})();
+</script>
+
+</body>
+</html>
