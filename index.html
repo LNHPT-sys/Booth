@@ -148,7 +148,8 @@
   .lane{
     position:relative;height:52px;background:var(--panel2);border-radius:4px;overflow:hidden;
   }
-  .take .lane{cursor:pointer;}
+  /* pan-y: vertical swipes still scroll the page, sideways drags scrub */
+  .lane{touch-action:pan-y;cursor:ew-resize;}
   .lane.beat{height:56px;}
   .clip{position:absolute;top:0;bottom:0;background:rgba(240,78,35,.07);border-left:1px solid var(--rec-deep);border-right:1px solid var(--rec-deep);}
   .clip canvas,.lane>canvas{display:block;width:100%;height:100%;}
@@ -228,7 +229,7 @@
     backdrop-filter:blur(10px);
   }
   .bar-in{max-width:720px;margin:0 auto;}
-  .scrub{height:20px;display:flex;align-items:center;cursor:pointer;}
+  .scrub{height:28px;display:flex;align-items:center;cursor:pointer;touch-action:pan-y;}
   .scrub .track{width:100%;height:3px;border-radius:2px;background:var(--panel2);position:relative;}
   .scrub .fill{height:100%;border-radius:2px;background:var(--brass);width:0;}
   .ctrls{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px;}
@@ -365,7 +366,7 @@
         </div>
         <div class="knobs">
           <div class="knob">
-            <span class="k">Level</span>
+            <span class="k">Vol</span>
             <input type="range" id="beatVol" min="0" max="1.5" step="0.01" value="0.85">
             <span class="v" id="beatVolV">85</span>
           </div>
@@ -393,6 +394,10 @@
     <div class="card" style="padding-block:4px 14px;">
       <button class="tog" id="tgPolish" aria-pressed="true">
         <span><span class="lab">Vocal polish</span><span class="sub">High-pass, compression, air, light room</span></span>
+        <span class="sw"><i></i></span>
+      </button>
+      <button class="tog" id="tgMaster" aria-pressed="true">
+        <span><span class="lab">Master bus</span><span class="sub">Glue compression and a limiter on the whole mix — louder, no clipping</span></span>
         <span class="sw"><i></i></span>
       </button>
       <button class="tog" id="tgMonitor" aria-pressed="false">
@@ -516,6 +521,132 @@ function vocalChain(c,wet){
   cmp.connect(dry); dry.connect(out);
   cmp.connect(cv); cv.connect(wt); wt.connect(out);
   return {input:inn,out:out};
+}
+
+/* Master bus: subsonic cut -> gentle glue -> brickwall-style limiter.
+   Sits on the whole mix, live and in the export. */
+function masterChain(c){
+  const comp=(thr,ratio,knee,att,rel)=>{
+    const k=c.createDynamicsCompressor();
+    k.threshold.value=thr; k.ratio.value=ratio; k.knee.value=knee;
+    k.attack.value=att; k.release.value=rel; return k;
+  };
+  const inn=c.createGain();
+  const hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=28; hp.Q.value=0.7;
+  const glue=comp(-16,2,8,0.025,0.25);
+  const lim=comp(-2,20,0,0.001,0.08);
+  const out=c.createGain(); out.gain.value=0.84;
+  inn.connect(hp); hp.connect(glue); glue.connect(lim); lim.connect(out);
+  return {input:inn,out:out};
+}
+
+/* ---- vocal clean-up: spectral noise reduction + de-esser ----
+   Offline STFT. The noise print comes from the take's quietest frames
+   (breaths, gaps between bars), so hiss, fan and room tone get pulled
+   down while the voice is left alone. Sibilant frames — where 5-10kHz
+   dominates — get that band ducked so S's stop spitting. */
+function makeFFT(n){
+  const rev=new Uint32Array(n), bits=Math.log2(n);
+  for(let i=0;i<n;i++){ let r=0; for(let b=0;b<bits;b++) r|=((i>>b)&1)<<(bits-1-b); rev[i]=r; }
+  const cs=new Float32Array(n/2), sn=new Float32Array(n/2);
+  for(let i=0;i<n/2;i++){ cs[i]=Math.cos(2*Math.PI*i/n); sn[i]=Math.sin(2*Math.PI*i/n); }
+  return function(re,im){
+    for(let i=0;i<n;i++){ const j=rev[i]; if(j>i){ let t=re[i]; re[i]=re[j]; re[j]=t; t=im[i]; im[i]=im[j]; im[j]=t; } }
+    for(let size=2;size<=n;size<<=1){
+      const half=size>>1, step=n/size;
+      for(let i=0;i<n;i+=size){
+        for(let j=0;j<half;j++){
+          const a=i+j, b=a+half, k=j*step;
+          const tr=re[b]*cs[k]+im[b]*sn[k], ti=im[b]*cs[k]-re[b]*sn[k];
+          re[b]=re[a]-tr; im[b]=im[a]-ti; re[a]+=tr; im[a]+=ti;
+        }
+      }
+    }
+  };
+}
+function cleanVocal(buf){
+  const N=2048, H=512, sr=buf.sampleRate, nb=N/2+1;
+  const fft=makeFFT(N);
+  const w=new Float32Array(N);
+  for(let i=0;i<N;i++) w[i]=0.5-0.5*Math.cos(2*Math.PI*i/N);
+  const kLo=Math.round(80*N/sr), sLo=Math.round(5000*N/sr), sHi=Math.min(nb-1,Math.round(10000*N/sr));
+  const out=AC().createBuffer(buf.numberOfChannels,buf.length,sr);
+  const re=new Float32Array(N), im=new Float32Array(N);
+  let before=0, after=0;
+  for(let ch=0;ch<buf.numberOfChannels;ch++){
+    const x=buf.getChannelData(ch), L=x.length;
+    const xp=new Float32Array(L+2*N); xp.set(x,N);
+    const F=Math.floor((L+N)/H);
+    /* noise print: average spectrum of the quietest tenth of frames */
+    const E=new Float32Array(F);
+    for(let f=0;f<F;f++){ let e=0; const o=f*H; for(let i=0;i<N;i+=4) e+=xp[o+i]*xp[o+i]; E[f]=e; }
+    const idx=[]; for(let f=0;f<F;f++) if(E[f]>1e-9) idx.push(f);
+    idx.sort((a,b)=>E[a]-E[b]);
+    const quiet=idx.slice(0,Math.max(8,Math.floor(idx.length*0.1)));
+    const Pn=new Float32Array(nb);
+    for(const f of quiet){
+      const o=f*H;
+      for(let i=0;i<N;i++){ re[i]=xp[o+i]*w[i]; im[i]=0; }
+      fft(re,im);
+      for(let k=0;k<nb;k++) Pn[k]+=(re[k]*re[k]+im[k]*im[k])/quiet.length;
+    }
+    const y=new Float32Array(L+2*N);
+    const g=new Float32Array(nb), gp=new Float32Array(nb).fill(1), gs=new Float32Array(nb);
+    for(let f=0;f<F;f++){
+      const o=f*H;
+      for(let i=0;i<N;i++){ re[i]=xp[o+i]*w[i]; im[i]=0; }
+      fft(re,im);
+      for(let k=0;k<nb;k++){
+        const P=re[k]*re[k]+im[k]*im[k];
+        let v=1-1.6*Pn[k]/(P+1e-12);
+        if(v<0.14) v=0.14;
+        /* open fast, close slow — kills the warbly "musical noise" */
+        if(v<gp[k]*0.72) v=gp[k]*0.72;
+        g[k]=v; gp[k]=v;
+      }
+      for(let k=0;k<nb;k++) gs[k]=(g[Math.max(0,k-1)]+g[k]+g[Math.min(nb-1,k+1)])/3;
+      /* de-ess: if 5-10kHz carries too much of the frame, duck that band */
+      let eb=0,et=0;
+      for(let k=kLo;k<nb;k++){ const P=(re[k]*re[k]+im[k]*im[k])*gs[k]*gs[k]; et+=P; if(k>=sLo&&k<=sHi) eb+=P; }
+      if(et>0&&eb/et>0.45){
+        const a=Math.max(0.4,Math.sqrt(0.45*(et-eb)/(0.55*eb)));
+        for(let k=sLo;k<=sHi;k++) gs[k]*=a;
+      }
+      for(let k=0;k<nb;k++){
+        re[k]*=gs[k]; im[k]*=gs[k];
+        if(k>0&&k<N/2){ re[N-k]*=gs[k]; im[N-k]*=gs[k]; }
+      }
+      fft(im,re);                       /* inverse via swapped forward FFT */
+      for(let i=0;i<N;i++) y[o+i]+=(re[i]/N)*w[i];
+    }
+    const d=out.getChannelData(ch);
+    for(let i=0;i<L;i++) d[i]=y[N+i]/1.5;  /* hann² at 75% overlap sums to 1.5 */
+    for(const f of quiet){
+      const o=f*H-N;
+      for(let i=0;i<N;i+=4){ const j=o+i; if(j<0||j>=L) continue; before+=x[j]*x[j]; after+=d[j]*d[j]; }
+    }
+  }
+  const dB=(before>0&&after>0)?10*Math.log10(after/before):0;
+  return {buffer:out,dB:dB};
+}
+
+/* Export loudness: with the master bus on, bring the mix peak to -1dBFS;
+   with it off, only pull it down if it would clip the WAV. */
+function finishLevel(buf){
+  let pk=0;
+  for(let c=0;c<buf.numberOfChannels;c++){
+    const d=buf.getChannelData(c);
+    for(let i=0;i<d.length;i++){ const a=Math.abs(d[i]); if(a>pk) pk=a; }
+  }
+  if(!pk) return;
+  let g=1;
+  if(S.master) g=0.891/pk;
+  else if(pk>0.99) g=0.99/pk;
+  if(g===1) return;
+  for(let c=0;c<buf.numberOfChannels;c++){
+    const d=buf.getChannelData(c);
+    for(let i=0;i<d.length;i++) d[i]*=g;
+  }
 }
 
 /* ============================ WAV + ZIP ============================ */
@@ -775,7 +906,7 @@ const S={
   beat:null,                 // {name, buffer, blob}
   takes:[],                  // {id,name,buffer,blob,mime,offset,nudge,gain,pan,mute,solo}
   playing:false, recording:false, playhead:0,
-  beatVol:0.85, polish:true, monitor:false, countIn:true, loop:false, stems:true,
+  beatVol:0.85, polish:true, master:true, monitor:false, countIn:true, loop:false, stems:true,
   latency:0,                 // this device's record round-trip, in ms
   sid:null, name:"Session 1",  // the open session; each one is its own beat + takes
   seq:0
@@ -851,11 +982,11 @@ async function saveProject(){
       name:S.name,
       beat: S.beat?{name:S.beat.name,blob:S.beat.blob,bpm:S.beat.bpm||0}:null,
       beatVol:S.beat?S.beatVol:0.85,
-      polish:S.polish, countIn:S.countIn, loop:S.loop, stems:S.stems,
+      polish:S.polish, master:S.master, countIn:S.countIn, loop:S.loop, stems:S.stems,
       takes:S.takes.map(t=>({
         name:t.name, blob:t.blob, mime:t.mime, offset:t.offset,
         nudge:t.nudge, gain:t.gain, pan:t.pan, mute:t.mute, solo:t.solo,
-        procWav:t.procWav||null, bleedOff:!!t.bleedOff, recorded:!!t.recorded
+        procWav:t.procWav||null, bleedOff:!!t.bleedOff, cleaned:!!t.cleaned, recorded:!!t.recorded
       }))
     });
     let e=SESS.list.find(x=>x.id===id);
@@ -880,6 +1011,7 @@ async function loadProject(id){
     }
     if(typeof p.beatVol==="number") S.beatVol=p.beatVol;
     if(typeof p.polish==="boolean") S.polish=p.polish;
+    if(typeof p.master==="boolean") S.master=p.master;
     if(typeof p.countIn==="boolean") S.countIn=p.countIn;
     if(typeof p.loop==="boolean") S.loop=p.loop;
     if(typeof p.stems==="boolean") S.stems=p.stems;
@@ -887,14 +1019,15 @@ async function loadProject(id){
       for(const t of p.takes){
         if(!t.blob) continue;
         try{
-          const src=(t.bleedOff&&t.procWav)?t.procWav:t.blob;
+          const proc=!!((t.bleedOff||t.cleaned)&&t.procWav);
+          const src=proc?t.procWav:t.blob;
           const buf=await decode(await src.arrayBuffer());
           S.takes.push({
             id:++S.seq, name:t.name||("Take "+(S.takes.length+1)), buffer:buf, blob:t.blob,
             mime:t.mime||"", offset:t.offset||0, nudge:t.nudge||0,
             gain:typeof t.gain==="number"?t.gain:1, pan:t.pan||0,
             mute:!!t.mute, solo:!!t.solo,
-            procWav:t.procWav||null, bleedOff:!!(t.bleedOff&&t.procWav),
+            procWav:proc?t.procWav:null, bleedOff:proc&&!!t.bleedOff, cleaned:proc&&!!t.cleaned,
             recorded:!!t.recorded
           });
           any=true;
@@ -924,7 +1057,7 @@ function setActive(id){
 function resetProject(){
   stopAll();
   S.beat=null; S.takes=[]; S.beatVol=0.85; S.playhead=0;
-  S.polish=true; S.countIn=true; S.loop=false; S.stems=true;
+  S.polish=true; S.master=true; S.countIn=true; S.loop=false; S.stems=true;
   beatEnv=null;
 }
 /* Finish writing the open session before anything replaces it. */
@@ -1211,7 +1344,7 @@ function takeRow(t,i){
       '<div class="head" data-head></div>'+
     '</div>'+
     '<div class="knobs">'+
-      '<div class="knob"><span class="k">Level</span>'+
+      '<div class="knob"><span class="k">Vol</span>'+
         '<input type="range" class="red" min="0" max="1.5" step="0.01" value="'+t.gain+'" data-act="gain">'+
         '<span class="v">'+Math.round(t.gain*100)+'</span></div>'+
       '<div class="knob"><span class="k">Pan</span>'+
@@ -1227,9 +1360,11 @@ function takeRow(t,i){
       '<button class="btn sm" data-act="barfwd" title="Forward one bar">Bar &#9654;</button>'+
     '</div>'+
     '<div class="acts">'+
-      '<button class="btn sm'+(t.bleedOff?" done":"")+'" data-act="bleed">'+
-        (t.bleedOff?"Restore original take":"Remove beat bleed")+'</button>'+
+      '<button class="btn sm" data-act="starthere" title="Move this take to start at the playhead">Start here</button>'+
+      '<button class="btn sm'+(t.bleedOff?" done":"")+'" data-act="bleed">'+(t.bleedOff?"Bleed off":"Remove bleed")+'</button>'+
+      '<button class="btn sm'+(t.cleaned?" done":"")+'" data-act="clean">'+(t.cleaned?"Cleaned":"Clean vocal")+'</button>'+
     '</div>'+
+    ((t.bleedOff||t.cleaned)?'<div class="acts"><button class="btn sm" data-act="restore">Restore original take</button></div>':'')+
     '<div class="acts">'+
       '<button class="btn sm" data-act="setdelay"'+(t.nudge?'':' disabled')+'>'+
         'Lock this sync in for every take</button>'+
@@ -1266,7 +1401,7 @@ function renderMix(){
   $("exportNote").textContent = has
     ? (S.stems?"A .zip holding mix.wav plus every stem":"A .zip holding mix.wav")
     : "Load a beat or a take first";
-  setTog("tgPolish",S.polish); setTog("tgMonitor",S.monitor);
+  setTog("tgPolish",S.polish); setTog("tgMaster",S.master); setTog("tgMonitor",S.monitor);
   setTog("tgCount",S.countIn); setTog("tgLoop",S.loop); setTog("tgStems",S.stems);
 }
 function setTog(id,on){ $(id).setAttribute("aria-pressed",on?"true":"false"); }
@@ -1277,9 +1412,8 @@ function renderHeads(){
   $("tcNow").textContent=fmt(S.playhead);
   $("tcNow").className="tc"+(S.recording?" on":"");
   if(S.beat){
-    const bd=S.beat.buffer.duration;
     const bh=$("beatHead");
-    bh.style.left=clamp(S.playhead/bd,0,1)*100+"%";
+    bh.style.left=pct+"%";
     bh.className="head"+(S.recording?" rec":"");
   }
   document.querySelectorAll("[data-head]").forEach(h=>{
@@ -1289,9 +1423,42 @@ function renderHeads(){
 }
 
 /* ============================ playback ============================ */
+/* Nodes of the running playback, kept so sliders change the sound live
+   instead of waiting for the next play. */
+let liveN={beat:null,takes:new Map(),bus:null}, playTok=0, restartT=0;
 function stopSources(){
   for(const s of live){ try{ s.stop(); }catch(e){} }
   live=[];
+  if(liveN.bus){ try{ liveN.bus.out.disconnect(); }catch(e){} }
+  liveN={beat:null,takes:new Map(),bus:null};
+}
+function audible(t){
+  const soloOn=S.takes.some(x=>x.solo);
+  return !t.mute&&!(soloOn&&!t.solo);
+}
+function liveSet(param,v){
+  if(!ctx) return;
+  try{ param.cancelScheduledValues(ctx.currentTime); param.setTargetAtTime(v,ctx.currentTime,0.012); }
+  catch(e){ param.value=v; }
+}
+function applyLive(){
+  if(!S.playing) return;
+  if(liveN.beat) liveSet(liveN.beat.gain,S.beatVol);
+  for(const t of S.takes){
+    const n=liveN.takes.get(t.id); if(!n) continue;
+    liveSet(n.gain.gain,audible(t)?t.gain:0);
+    if(n.pan) liveSet(n.pan.pan,clamp(t.pan,-1,1));
+  }
+}
+function nowPos(){
+  return (ctx&&S.playing)?Math.max(p0,p0+(ctx.currentTime-t0)):S.playhead;
+}
+/* Sync moves a take in time, which means rescheduling it: restart from
+   where we are once the finger settles. */
+function restartSoon(){
+  if(!S.playing||S.recording) return;
+  clearTimeout(restartT);
+  restartT=setTimeout(()=>{ if(S.playing&&!S.recording) play(nowPos()); },140);
 }
 function tick(){
   if(!ctx) return;
@@ -1310,28 +1477,35 @@ function tick(){
 
 async function play(from){
   const c=AC();
+  const my=++playTok;
   try{ await c.resume(); }catch(e){}
+  if(my!==playTok) return;            /* a newer play() already took over */
   stopSources();
   const lead=0.09, at=c.currentTime+lead;
   t0=at; p0=from;
-  const soloOn=S.takes.some(x=>x.solo);
+  const bus=S.master?masterChain(c):null;
+  if(bus) bus.out.connect(c.destination);
+  const dest=bus?bus.input:c.destination;
+  liveN.bus=bus;
 
   if(S.beat&&from<S.beat.buffer.duration){
     const s=c.createBufferSource(); s.buffer=S.beat.buffer;
     const g=c.createGain(); g.gain.value=S.beatVol;
-    s.connect(g); g.connect(c.destination);
+    s.connect(g); g.connect(dest);
     s.start(at,Math.max(0,from)); live.push(s);
+    liveN.beat=g;
   }
   for(const t of S.takes){
-    if(t.mute||(soloOn&&!t.solo)) continue;
+    /* muted takes still get wired, at zero, so M and S work mid-play */
     const s=c.createBufferSource(); s.buffer=t.buffer;
-    const g=c.createGain(); g.gain.value=t.gain;
+    const g=c.createGain(); g.gain.value=audible(t)?t.gain:0;
     let node=s;
     if(S.polish){ const ch=vocalChain(c); s.connect(ch.input); node=ch.out; }
     let pan=null;
     if(c.createStereoPanner){ pan=c.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
     if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
-    g.connect(c.destination);
+    g.connect(dest);
+    liveN.takes.set(t.id,{gain:g,pan:pan});
     const clip=t.offset+t.nudge/1000;
     const when=at+(clip-from);
     if(when>=at){ s.start(when,0); }
@@ -1526,24 +1700,40 @@ function alignTake(t){
     : "Aligned "+t.name+" — moved "+(t.nudge>0?"+":"")+t.nudge+"ms, match "+Math.round(coarse.score*100)+"%.","good");
 }
 
+async function restoreTake(t){
+  try{
+    t.buffer=await decode(await t.blob.arrayBuffer());
+    t.bleedOff=false; t.cleaned=false; t.procWav=null;
+    renderAll(); scheduleSave(); restartSoon();
+    toast("Restored the original take.");
+  }catch(e){ toast("Couldn't restore that take.","bad"); }
+}
+function storeProc(t){
+  try{ t.procWav=new Blob([encodeWAV(t.buffer)],{type:"audio/wav"}); }catch(e){ t.procWav=null; }
+}
+async function cleanTake(t,btn){
+  if(t.cleaned){ toast("Already cleaned. RESTORE ORIGINAL TAKE undoes it."); return; }
+  if(btn){ btn.textContent="Working…"; btn.disabled=true; }
+  await new Promise(r=>setTimeout(r,40));   /* let "Working…" paint first */
+  try{
+    const r=cleanVocal(t.buffer);
+    t.buffer=r.buffer; t.cleaned=true; storeProc(t);
+    renderAll(); scheduleSave(); restartSoon();
+    toast("Cleaned "+t.name+" — background noise down "+Math.abs(r.dB).toFixed(1)+"dB, harsh S's tamed.","good");
+  }catch(e){
+    if(btn){ btn.textContent="Clean vocal"; btn.disabled=false; }
+    toast("Clean-up failed: "+(e.message||e),"bad");
+  }
+}
 async function bleedTake(t,btn){
   if(!S.beat){ toast("Load the beat first — there's nothing to subtract without it.","bad"); return; }
-  if(t.bleedOff){
-    try{
-      t.buffer=await decode(await t.blob.arrayBuffer());
-      t.bleedOff=false; t.procWav=null;
-      renderAll(); scheduleSave();
-      toast("Restored the original take.");
-    }catch(e){ toast("Couldn't restore that take.","bad"); }
-    return;
-  }
+  if(t.bleedOff){ toast("Bleed is already off. RESTORE ORIGINAL TAKE undoes it."); return; }
   const old=btn?btn.textContent:"";
   if(btn){ btn.textContent="Working…"; btn.disabled=true; }
   try{
     const r=await removeBleed(t);
-    t.buffer=r.buffer; t.bleedOff=true;
-    try{ t.procWav=new Blob([encodeWAV(r.buffer)],{type:"audio/wav"}); }catch(e){ t.procWav=null; }
-    renderAll(); scheduleSave();
+    t.buffer=r.buffer; t.bleedOff=true; storeProc(t);
+    renderAll(); scheduleSave(); restartSoon();
     toast("Bleed pulled down "+Math.abs(r.dB).toFixed(1)+"dB on "+t.name+". Solo it to hear what's left.","good");
   }catch(e){
     if(btn){ btn.textContent=old; btn.disabled=false; }
@@ -1563,14 +1753,16 @@ async function renderMixBuffer(withTakesOnly){
   const c=AC(), sr=c.sampleRate, total=duration();
   const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
   const off=new OAC(2,Math.max(1,Math.ceil(total*sr)),sr);
-  const soloOn=S.takes.some(x=>x.solo);
+  const bus=S.master?masterChain(off):null;
+  if(bus) bus.out.connect(off.destination);
+  const dest=bus?bus.input:off.destination;
   if(S.beat&&!withTakesOnly){
     const s=off.createBufferSource(); s.buffer=S.beat.buffer;
     const g=off.createGain(); g.gain.value=S.beatVol;
-    s.connect(g); g.connect(off.destination); s.start(0,0);
+    s.connect(g); g.connect(dest); s.start(0,0);
   }
   for(const t of S.takes){
-    if(t.mute||(soloOn&&!t.solo)) continue;
+    if(!audible(t)) continue;
     const s=off.createBufferSource(); s.buffer=t.buffer;
     const g=off.createGain(); g.gain.value=t.gain;
     let node=s;
@@ -1578,7 +1770,7 @@ async function renderMixBuffer(withTakesOnly){
     let pan=null;
     if(off.createStereoPanner){ pan=off.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
     if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
-    g.connect(off.destination);
+    g.connect(dest);
     startClip(s,t);
   }
   return await off.startRendering();
@@ -1611,6 +1803,7 @@ async function doExport(){
     const base=safeName(S.beat?S.beat.name:"booth");
     const files=[];
     const mix=await renderMixBuffer(false);
+    finishLevel(mix);
     files.push({name:base+"_mix.wav",data:encodeWAV(mix)});
     if(S.stems){
       if(S.beat) files.push({name:"stems/beat.wav",data:encodeWAV(S.beat.buffer)});
@@ -1626,7 +1819,8 @@ async function doExport(){
       "beat: "+(S.beat?S.beat.name:"(none)")+"\n"+
       "length: "+fmt(duration())+"\n"+
       "takes: "+S.takes.length+"\n"+
-      "vocal polish: "+(S.polish?"on":"off")+"\n\n"+
+      "vocal polish: "+(S.polish?"on":"off")+"\n"+
+      "master bus: "+(S.master?"on":"off")+"\n\n"+
       S.takes.map((t,i)=>(i+1)+". "+t.name+" — start "+fmt(t.offset)+", sync "+(t.nudge>0?"+":"")+t.nudge+
         "ms, level "+Math.round(t.gain*100)+", pan "+(t.pan===0?"C":(t.pan<0?"L":"R")+Math.round(Math.abs(t.pan)*100))+
         (t.mute?", muted":"")).join("\n")+"\n";
@@ -1732,7 +1926,7 @@ $("clearTakes").addEventListener("click",()=>{
 $("beatVol").addEventListener("input",e=>{
   S.beatVol=parseFloat(e.target.value);
   $("beatVolV").textContent=Math.round(S.beatVol*100);
-  scheduleSave();
+  applyLive(); scheduleSave();
 });
 
 $("takeList").addEventListener("click",e=>{
@@ -1740,26 +1934,22 @@ $("takeList").addEventListener("click",e=>{
   const t=S.takes.find(x=>x.id==row.dataset.id); if(!t) return;
   const btn=e.target.closest("[data-act]");
 
-  /* Tap anywhere on a take's lane to drop its start there. This is how a
-     take that begins ten seconds before the beat gets into range — ALIGN
-     only refines, it can't search the whole song. */
-  if(!btn){
-    const lane=e.target.closest("[data-lane]");
-    if(lane){
-      const r=lane.getBoundingClientRect();
-      const frac=clamp((e.clientX-r.left)/r.width,0,1);
-      t.offset=frac*duration(); t.nudge=0;
-      renderAll(); scheduleSave();
-      toast(t.name+" starts at "+fmt(t.offset)+" now. Hit ALIGN to lock it to the grid.");
-    }
-    return;
-  }
-  if(btn.tagName==="INPUT") return;
+  if(!btn||btn.tagName==="INPUT") return;
   const act=btn.dataset.act;
-  if(act==="mute"){ t.mute=!t.mute; renderAll(); scheduleSave(); }
-  else if(act==="solo"){ t.solo=!t.solo; renderAll(); scheduleSave(); }
-  else if(act==="align"){ alignTake(t); }
+  if(act==="mute"){ t.mute=!t.mute; renderAll(); applyLive(); scheduleSave(); }
+  else if(act==="solo"){ t.solo=!t.solo; renderAll(); applyLive(); scheduleSave(); }
+  else if(act==="align"){ alignTake(t); restartSoon(); }
   else if(act==="bleed"){ bleedTake(t,btn); }
+  else if(act==="clean"){ cleanTake(t,btn); }
+  else if(act==="restore"){ restoreTake(t); }
+  /* Scrub to where the take should begin, then drop it there. This is how
+     a take that begins ten seconds before the beat gets into range —
+     ALIGN only refines, it can't search the whole song. */
+  else if(act==="starthere"){
+    t.offset=S.playhead; t.nudge=0;
+    renderAll(); scheduleSave(); restartSoon();
+    toast(t.name+" starts at "+fmt(t.offset)+" now. Hit ALIGN to lock it to the grid.");
+  }
   else if(act==="setdelay"){
     if(!t.nudge){ toast("Slide SYNC until this take sits right, then lock it in."); return; }
     S.latency=clamp(Math.round(S.latency-t.nudge),-1500,1500);
@@ -1773,7 +1963,7 @@ $("takeList").addEventListener("click",e=>{
     const bs=barSeconds();
     if(!bs){ toast("Couldn't read this beat's tempo, so bar moves are off. Use SYNC instead.","bad"); return; }
     t.offset=Math.max(0,t.offset+(act==="barfwd"?bs:-bs));
-    renderAll(); scheduleSave();
+    renderAll(); scheduleSave(); restartSoon();
     toast(t.name+" moved "+(act==="barfwd"?"forward":"back")+" one bar — now starting at "+fmt(t.offset)+".");
   }
   else if(act==="del"){
@@ -1787,9 +1977,9 @@ $("takeList").addEventListener("input",e=>{
   const t=S.takes.find(x=>x.id==row.dataset.id); if(!t) return;
   const act=inp.dataset.act, v=inp.value;
   const vEl=inp.parentElement?inp.parentElement.querySelector(".v"):null;
-  if(act==="gain"){ t.gain=parseFloat(v); if(vEl) vEl.textContent=Math.round(t.gain*100); }
+  if(act==="gain"){ t.gain=parseFloat(v); if(vEl) vEl.textContent=Math.round(t.gain*100); applyLive(); }
   else if(act==="pan"){
-    t.pan=parseFloat(v);
+    t.pan=parseFloat(v); applyLive();
     if(vEl){ vEl.textContent=t.pan===0?"C":(t.pan<0?"L":"R")+Math.round(Math.abs(t.pan)*100);
              vEl.className="v"+(t.pan?" set":""); }
   }
@@ -1801,6 +1991,7 @@ $("takeList").addEventListener("input",e=>{
       const d=duration(), start=Math.max(0,t.offset+t.nudge/1000);
       clip.style.left=((start/d)*100).toFixed(3)+"%";
     }
+    restartSoon();
   }
   else if(act==="name"){ t.name=inp.value.slice(0,30); }
   scheduleSave();
@@ -1813,7 +2004,8 @@ function bindTog(id,key,after){
     renderMix(); scheduleSave();
   });
 }
-bindTog("tgPolish","polish",()=>{ if(S.playing) play(S.playhead); });
+bindTog("tgPolish","polish",()=>{ if(S.playing) play(nowPos()); });
+bindTog("tgMaster","master",()=>{ if(S.playing) play(nowPos()); });
 bindTog("tgMonitor","monitor");
 bindTog("tgCount","countIn");
 bindTog("tgLoop","loop");
@@ -1823,11 +2015,43 @@ $("exportBtn").addEventListener("click",doExport);
 $("stopBtn").addEventListener("click",()=>{ if(S.recording) stopRec(); else stopAll(); });
 $("playBtn").addEventListener("click",()=>{ if(S.recording) return; S.playing?pause():play(S.playhead); });
 $("recBtn").addEventListener("click",()=>{ S.recording?stopRec():startRec(); });
-$("scrub").addEventListener("click",e=>{
+/* Finger scrubbing on the transport bar and on every lane — beat and
+   takes. A tap jumps there; a sideways drag scrubs, pausing the sound
+   while the finger moves and picking playback back up on release.
+   Vertical swipes are left to the browser so the page still scrolls. */
+let scrubSt=null;
+function scrubSeek(st,x){
+  const r=st.el.getBoundingClientRect();
+  S.playhead=clamp((x-r.left)/Math.max(1,r.width),0,1)*duration();
+  renderHeads();
+}
+document.addEventListener("pointerdown",e=>{
+  if(S.recording||(e.pointerType==="mouse"&&e.button!==0)) return;
+  if(e.target.closest("button,input")) return;
+  const el=e.target.closest("#scrub,#beatLane,[data-lane]"); if(!el) return;
+  scrubSt={el:el,id:e.pointerId,x0:e.clientX,drag:false,resume:S.playing};
+});
+document.addEventListener("pointermove",e=>{
+  const st=scrubSt; if(!st||e.pointerId!==st.id) return;
+  if(!st.drag){
+    if(Math.abs(e.clientX-st.x0)<6) return;
+    st.drag=true;
+    if(S.playing){ stopSources(); cancelAnimationFrame(raf); S.playing=false; setPlayIcon(); }
+    try{ st.el.setPointerCapture(st.id); }catch(err){}
+  }
+  scrubSeek(st,e.clientX);
+});
+document.addEventListener("pointerup",e=>{
+  const st=scrubSt; if(!st||e.pointerId!==st.id) return;
+  scrubSt=null;
   if(S.recording) return;
-  const r=e.currentTarget.getBoundingClientRect();
-  const pos=clamp((e.clientX-r.left)/r.width,0,1)*duration();
-  if(S.playing) play(pos); else { S.playhead=pos; renderHeads(); }
+  scrubSeek(st,e.clientX);
+  if(st.resume) play(S.playhead);
+});
+document.addEventListener("pointercancel",e=>{
+  const st=scrubSt; if(!st||e.pointerId!==st.id) return;
+  scrubSt=null;
+  if(st.drag&&st.resume&&!S.recording) play(S.playhead);
 });
 $("recheck").addEventListener("click",async()=>{
   probeSync(); await probeAsync(); renderCheck();
