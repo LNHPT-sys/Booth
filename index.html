@@ -5,14 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="BOOTH — mobile vocal booth. Load a beat, record over it, stack takes, mix and export.">
 <meta name="theme-color" content="#0D0C0A">
-<!-- launches fullscreen when added to the iPhone home screen -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="BOOTH">
 <meta name="mobile-web-app-capable" content="yes">
 <style>
-  /* Base reset — matches what the artifact runtime supplied, so the page
-     renders here exactly as it did inside Claude. */
   :root{
     color-scheme: dark;
     padding-top: env(safe-area-inset-top, 0px);
@@ -751,8 +748,18 @@ const S={
   takes:[],                  // {id,name,buffer,blob,mime,offset,nudge,gain,pan,mute,solo}
   playing:false, recording:false, playhead:0,
   beatVol:0.85, polish:true, monitor:false, countIn:true, loop:false, stems:true,
+  latency:0,                 // this device's record round-trip, in ms
   seq:0
 };
+/* Latency belongs to the headphones and phone, not the song, so it lives
+   outside the project and survives loading a different beat. */
+function loadLatency(){
+  try{ const v=parseInt(localStorage.getItem("booth.latency")||"0",10);
+       if(isFinite(v)) S.latency=clamp(v,-1500,1500); }catch(e){}
+}
+function saveLatency(){
+  try{ localStorage.setItem("booth.latency",String(S.latency)); }catch(e){}
+}
 const ENV={ framed:false, policy:null, perm:null, mime:"", secure:false, md:false, caps:null, host:"", micErr:"" };
 
 let stream=null, recorder=null, chunks=[], recMime="", micSrc=null, monGain=null, analyser=null;
@@ -921,6 +928,7 @@ function renderCheck(){
     ["Permission", ENV.perm||"not asked yet", ENV.perm==="granted"?"ok":(ENV.perm==="denied"?"no":"")],
     ["Recorder", ENV.mime||"none", ENV.mime?"ok":"no"],
     ["Saving", DB.ok?"on this device":"session only", DB.ok?"ok":"warn"],
+    ["Input delay", S.latency?S.latency+"ms corrected":"not set", S.latency?"ok":"warn"],
     ["Claude downloads", ENV.caps||"—", ENV.caps==="granted"?"ok":"warn"]
   ];
   if(ENV.micErr) rows.push(["Last mic error",ENV.micErr,"no"]);
@@ -931,7 +939,7 @@ function renderCheck(){
 
   $("recBtn").disabled = !v.ok;
   $("footNote").textContent = v.ok
-    ? "Headphones are required — they keep the beat out of your mic · takes are saved on this device, export to keep them anywhere else · if a take sits off the beat, hit ALIGN or slide SYNC"
+    ? "Wired headphones beat Bluetooth here — Bluetooth adds 150-300ms and drops iOS into call quality · first take off the beat? slide SYNC till it locks, then LOCK THIS SYNC IN and every take after lands right · ALIGN only works on takes that have the beat bleeding into them, so with headphones on, use SYNC"
     : "Import path, three steps: play the beat out loud and rap over it into Voice Memos · import that take here · hit ALIGN TO BEAT, then REMOVE BLEED — BOOTH locks it to the grid and subtracts the beat that leaked into your mic.";
 }
 
@@ -1040,6 +1048,10 @@ function takeRow(t,i){
     '<div class="acts">'+
       '<button class="btn sm'+(t.bleedOff?" done":"")+'" data-act="bleed">'+
         (t.bleedOff?"Restore original take":"Remove beat bleed")+'</button>'+
+    '</div>'+
+    '<div class="acts">'+
+      '<button class="btn sm" data-act="setdelay"'+(t.nudge?'':' disabled')+'>'+
+        'Lock this sync in for every take</button>'+
     '</div>';
   const cv=el.querySelector("canvas");
   requestAnimationFrame(()=>drawWave(cv,t.buffer,"#F04E23"));
@@ -1283,7 +1295,7 @@ async function finishRec(){
   if(!blob.size){ toast("That take came back empty — nothing was captured.","bad"); return; }
   try{
     const buf=await decode(await blob.arrayBuffer());
-    addTake(buf,blob,recMime,recFrom,"Take "+(S.takes.length+1),true);
+    addTake(buf,blob,recMime,Math.max(0,recFrom-S.latency/1000),"Take "+(S.takes.length+1),true);
     toast("Take "+S.takes.length+" captured — "+fmt(buf.duration).slice(0,5)+". Hit ALIGN if it sits off the beat.","good");
   }catch(e){
     toast("Couldn't read that take back: "+(e.message||e),"bad");
@@ -1543,6 +1555,15 @@ $("takeList").addEventListener("click",e=>{
   else if(act==="solo"){ t.solo=!t.solo; renderAll(); scheduleSave(); }
   else if(act==="align"){ alignTake(t); }
   else if(act==="bleed"){ bleedTake(t,btn); }
+  else if(act==="setdelay"){
+    if(!t.nudge){ toast("Slide SYNC until this take sits right, then lock it in."); return; }
+    S.latency=clamp(Math.round(S.latency-t.nudge),-1500,1500);
+    saveLatency();
+    /* this take is already where it should be — fold the nudge into its start */
+    t.offset=Math.max(0,t.offset+t.nudge/1000); t.nudge=0;
+    renderAll(); scheduleSave();
+    toast("Locked in. BOOTH now shifts every new take by "+S.latency+"ms, so you only do this once per setup.","good");
+  }
   else if(act==="barback"||act==="barfwd"){
     const bs=barSeconds();
     if(!bs){ toast("Couldn't read this beat's tempo, so bar moves are off. Use SYNC instead.","bad"); return; }
@@ -1620,6 +1641,7 @@ document.addEventListener("keydown",e=>{
 
 /* ============================ boot ============================ */
 (async function boot(){
+  loadLatency();
   probeSync();
   renderCheck();
   renderAll();
