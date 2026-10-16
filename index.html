@@ -392,14 +392,6 @@
   <section>
     <div class="eyebrow"><h2>Mix</h2></div>
     <div class="card" style="padding-block:4px 14px;">
-      <button class="tog" id="tgPolish" aria-pressed="true">
-        <span><span class="lab">Vocal polish</span><span class="sub">Rumble cut, light compression, a touch of room</span></span>
-        <span class="sw"><i></i></span>
-      </button>
-      <button class="tog" id="tgMaster" aria-pressed="false">
-        <span><span class="lab">Master bus</span><span class="sub">Light glue and a peak limiter on the whole mix — stops clipping</span></span>
-        <span class="sw"><i></i></span>
-      </button>
       <button class="tog" id="tgMonitor" aria-pressed="false">
         <span><span class="lab">Voice monitor</span><span class="sub">Hear yourself while recording — headphones only</span></span>
         <span class="sw"><i></i></span>
@@ -493,162 +485,16 @@ function pickMime(){
   return "";
 }
 
-function impulse(c,sec,decay){
-  const n=Math.floor(c.sampleRate*sec), b=c.createBuffer(2,n,c.sampleRate);
-  for(let ch=0;ch<2;ch++){
-    const d=b.getChannelData(ch);
-    for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/n,decay);
-  }
-  return b;
-}
-
-/* Rap vocal chain: HPF -> de-boom -> presence -> air -> comp -> dry + short room.
-   Kept light on purpose. The browser's compressor adds its own makeup
-   gain, which also lifts hiss and breaths, so a trim after it brings the
-   vocal back to roughly the level it went in at. */
-const VTRIM=0.6, MTRIM=0.95;   /* calibrated against the compressors' auto makeup */
-function vocalChain(c,wet){
-  wet = wet==null?0.05:wet;
-  const inn=c.createGain();
-  const hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=85; hp.Q.value=0.7;
-  const mud=c.createBiquadFilter(); mud.type="peaking"; mud.frequency.value=330; mud.Q.value=1.0; mud.gain.value=-1.5;
-  const pres=c.createBiquadFilter(); pres.type="peaking"; pres.frequency.value=3000; pres.Q.value=0.8; pres.gain.value=1.2;
-  const air=c.createBiquadFilter(); air.type="highshelf"; air.frequency.value=10000; air.gain.value=1.0;
-  const cmp=c.createDynamicsCompressor();
-  cmp.threshold.value=-20; cmp.knee.value=12; cmp.ratio.value=2.2;
-  cmp.attack.value=0.012; cmp.release.value=0.2;
-  const trim=c.createGain(); trim.gain.value=VTRIM;
-  const dry=c.createGain(); dry.gain.value=1-wet;
-  const wt=c.createGain(); wt.gain.value=wet;
-  const cv=c.createConvolver(); cv.buffer=impulse(c,0.6,4.5);
-  const out=c.createGain();
-  inn.connect(hp); hp.connect(mud); mud.connect(pres); pres.connect(air); air.connect(cmp);
-  cmp.connect(trim); trim.connect(dry); dry.connect(out);
-  trim.connect(cv); cv.connect(wt); wt.connect(out);
-  return {input:inn,out:out};
-}
-
-/* Master bus: subsonic cut -> light glue -> limiter that only catches
-   peaks. Sits on the whole mix, live and in the export. Off by default. */
-function masterChain(c){
-  const comp=(thr,ratio,knee,att,rel)=>{
-    const k=c.createDynamicsCompressor();
-    k.threshold.value=thr; k.ratio.value=ratio; k.knee.value=knee;
-    k.attack.value=att; k.release.value=rel; return k;
-  };
-  const inn=c.createGain();
-  const hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=28; hp.Q.value=0.7;
-  const glue=comp(-12,1.5,10,0.03,0.25);
-  const trim=c.createGain(); trim.gain.value=MTRIM;
-  const lim=comp(-1,20,0,0.001,0.08);
-  const out=c.createGain(); out.gain.value=0.84;
-  inn.connect(hp); hp.connect(glue); glue.connect(trim); trim.connect(lim); lim.connect(out);
-  return {input:inn,out:out};
-}
-
-/* ---- vocal clean-up: spectral noise reduction + de-esser ----
-   Offline STFT. The noise print comes from the take's quietest frames
-   (breaths, gaps between bars), so hiss, fan and room tone get pulled
-   down while the voice is left alone. Sibilant frames — where 5-10kHz
-   dominates — get that band ducked so S's stop spitting. */
-function makeFFT(n){
-  const rev=new Uint32Array(n), bits=Math.log2(n);
-  for(let i=0;i<n;i++){ let r=0; for(let b=0;b<bits;b++) r|=((i>>b)&1)<<(bits-1-b); rev[i]=r; }
-  const cs=new Float32Array(n/2), sn=new Float32Array(n/2);
-  for(let i=0;i<n/2;i++){ cs[i]=Math.cos(2*Math.PI*i/n); sn[i]=Math.sin(2*Math.PI*i/n); }
-  return function(re,im){
-    for(let i=0;i<n;i++){ const j=rev[i]; if(j>i){ let t=re[i]; re[i]=re[j]; re[j]=t; t=im[i]; im[i]=im[j]; im[j]=t; } }
-    for(let size=2;size<=n;size<<=1){
-      const half=size>>1, step=n/size;
-      for(let i=0;i<n;i+=size){
-        for(let j=0;j<half;j++){
-          const a=i+j, b=a+half, k=j*step;
-          const tr=re[b]*cs[k]+im[b]*sn[k], ti=im[b]*cs[k]-re[b]*sn[k];
-          re[b]=re[a]-tr; im[b]=im[a]-ti; re[a]+=tr; im[a]+=ti;
-        }
-      }
-    }
-  };
-}
-function cleanVocal(buf){
-  const N=2048, H=512, sr=buf.sampleRate, nb=N/2+1;
-  const fft=makeFFT(N);
-  const w=new Float32Array(N);
-  for(let i=0;i<N;i++) w[i]=0.5-0.5*Math.cos(2*Math.PI*i/N);
-  const kLo=Math.round(80*N/sr), sLo=Math.round(5000*N/sr), sHi=Math.min(nb-1,Math.round(10000*N/sr));
-  const out=AC().createBuffer(buf.numberOfChannels,buf.length,sr);
-  const re=new Float32Array(N), im=new Float32Array(N);
-  let before=0, after=0;
-  for(let ch=0;ch<buf.numberOfChannels;ch++){
-    const x=buf.getChannelData(ch), L=x.length;
-    const xp=new Float32Array(L+2*N); xp.set(x,N);
-    const F=Math.floor((L+N)/H);
-    /* noise print: average spectrum of the quietest tenth of frames */
-    const E=new Float32Array(F);
-    for(let f=0;f<F;f++){ let e=0; const o=f*H; for(let i=0;i<N;i+=4) e+=xp[o+i]*xp[o+i]; E[f]=e; }
-    const idx=[]; for(let f=0;f<F;f++) if(E[f]>1e-9) idx.push(f);
-    idx.sort((a,b)=>E[a]-E[b]);
-    const quiet=idx.slice(0,Math.max(8,Math.floor(idx.length*0.1)));
-    const Pn=new Float32Array(nb);
-    for(const f of quiet){
-      const o=f*H;
-      for(let i=0;i<N;i++){ re[i]=xp[o+i]*w[i]; im[i]=0; }
-      fft(re,im);
-      for(let k=0;k<nb;k++) Pn[k]+=(re[k]*re[k]+im[k]*im[k])/quiet.length;
-    }
-    const y=new Float32Array(L+2*N);
-    const g=new Float32Array(nb), gp=new Float32Array(nb).fill(1), gs=new Float32Array(nb);
-    for(let f=0;f<F;f++){
-      const o=f*H;
-      for(let i=0;i<N;i++){ re[i]=xp[o+i]*w[i]; im[i]=0; }
-      fft(re,im);
-      for(let k=0;k<nb;k++){
-        const P=re[k]*re[k]+im[k]*im[k];
-        let v=1-1.0*Pn[k]/(P+1e-12);
-        if(v<0.35) v=0.35;           /* -9dB max: thins noise, never hollows the voice */
-        /* open fast, close slow — kills the warbly "musical noise" */
-        if(v<gp[k]*0.86) v=gp[k]*0.86;
-        g[k]=v; gp[k]=v;
-      }
-      for(let k=0;k<nb;k++) gs[k]=(g[Math.max(0,k-1)]+g[k]+g[Math.min(nb-1,k+1)])/3;
-      /* de-ess: if 5-10kHz carries too much of the frame, duck that band */
-      let eb=0,et=0;
-      for(let k=kLo;k<nb;k++){ const P=(re[k]*re[k]+im[k]*im[k])*gs[k]*gs[k]; et+=P; if(k>=sLo&&k<=sHi) eb+=P; }
-      if(et>0&&eb/et>0.55){
-        const a=Math.max(0.6,Math.sqrt(0.55*(et-eb)/(0.45*eb)));
-        for(let k=sLo;k<=sHi;k++) gs[k]*=a;
-      }
-      for(let k=0;k<nb;k++){
-        re[k]*=gs[k]; im[k]*=gs[k];
-        if(k>0&&k<N/2){ re[N-k]*=gs[k]; im[N-k]*=gs[k]; }
-      }
-      fft(im,re);                       /* inverse via swapped forward FFT */
-      for(let i=0;i<N;i++) y[o+i]+=(re[i]/N)*w[i];
-    }
-    const d=out.getChannelData(ch);
-    for(let i=0;i<L;i++) d[i]=y[N+i]/1.5;  /* hann² at 75% overlap sums to 1.5 */
-    for(const f of quiet){
-      const o=f*H-N;
-      for(let i=0;i<N;i+=4){ const j=o+i; if(j<0||j>=L) continue; before+=x[j]*x[j]; after+=d[j]*d[j]; }
-    }
-  }
-  const dB=(before>0&&after>0)?10*Math.log10(after/before):0;
-  return {buffer:out,dB:dB};
-}
-
-/* Export loudness: with the master bus on, bring the mix peak to -1dBFS;
-   with it off, only pull it down if it would clip the WAV. */
-function finishLevel(buf){
+/* Export guard: never touches the sound unless the mix would clip the
+   WAV, and then only turns the whole thing down evenly. */
+function clipGuard(buf){
   let pk=0;
   for(let c=0;c<buf.numberOfChannels;c++){
     const d=buf.getChannelData(c);
     for(let i=0;i<d.length;i++){ const a=Math.abs(d[i]); if(a>pk) pk=a; }
   }
-  if(!pk) return;
-  let g=1;
-  if(S.master) g=0.891/pk;
-  else if(pk>0.99) g=0.99/pk;
-  if(g===1) return;
+  if(pk<=0.99) return;
+  const g=0.99/pk;
   for(let c=0;c<buf.numberOfChannels;c++){
     const d=buf.getChannelData(c);
     for(let i=0;i<d.length;i++) d[i]*=g;
@@ -793,7 +639,7 @@ function bestLag(b,t,base,maxLag,step){
   return {lag:best.lag, score:best.score, ambiguous:rival};
 }
 
-/* ---- sample-accurate alignment + beat-bleed removal ---- */
+/* ---- sample-accurate alignment ---- */
 function toMono(buf){
   const n=buf.length, ch=buf.numberOfChannels, out=new Float32Array(n);
   for(let c=0;c<ch;c++){
@@ -832,53 +678,6 @@ function fineAlign(bm,tm,base,range,sr){
   }
   return best;
 }
-/* Subtract the beat that leaked into a take.
-   The speaker-to-mic path is a room, not a volume knob: it colours the
-   sound and smears it with reflections, so a simple scaled subtraction
-   cannot cancel it. This learns that path as an FIR filter with NLMS —
-   the same adaptive filter used for acoustic echo cancellation — and
-   subtracts what it predicts. The voice is uncorrelated with the beat,
-   so it survives while the leaked beat is cancelled. */
-async function removeBleed(t){
-  const sr=t.buffer.sampleRate;
-  const bm=toMono(S.beat.buffer), tm=toMono(t.buffer);
-  const base=Math.round((t.offset+t.nudge/1000)*sr);
-  const d=fineAlign(bm,tm,base,Math.round(sr*0.02),sr);
-  const off0=base+d;
-  const n=tm.length;
-
-  const L=384;                       /* ~9ms of room response */
-  const mu=0.22, eps=1e-7;
-  const h=new Float32Array(L);
-  const xb=new Float32Array(n+L);    /* padded beat so every tap index is valid */
-  for(let i=0;i<n;i++){
-    const v=bm[off0+i];
-    xb[L-1+i]= v===undefined?0:v;
-  }
-
-  const out=AC().createBuffer(1,n,sr);
-  const o=out.getChannelData(0);
-  let pow=eps;
-  for(let i=0;i<n;i++){
-    const head=L-1+i;
-    const xin=xb[head], xold=xb[head-L]||0;
-    pow+=xin*xin-xold*xold;
-    if(pow<eps) pow=eps;
-    let y=0;
-    for(let k=0;k<L;k++) y+=h[k]*xb[head-k];
-    const e=tm[i]-y;
-    o[i]=e;
-    const g=mu*e/pow;
-    for(let k=0;k<L;k++) h[k]+=g*xb[head-k];
-  }
-
-  /* measure after the filter has converged, not through the settling */
-  const skip=Math.min(Math.floor(sr*1.0),Math.floor(n/3));
-  let er=0,eo=0;
-  for(let i=skip;i<n;i++){ er+=tm[i]*tm[i]; eo+=o[i]*o[i]; }
-  const dB=(er>0&&eo>0)?10*Math.log10(eo/er):0;
-  return {buffer:out, shiftMs:(d/sr)*1000, dB:dB};
-}
 
 
 /* Tempo from the beat's own onset curve: autocorrelate and take the
@@ -912,7 +711,7 @@ const S={
   beat:null,                 // {name, buffer, blob}
   takes:[],                  // {id,name,buffer,blob,mime,offset,nudge,gain,pan,mute,solo}
   playing:false, recording:false, playhead:0,
-  beatVol:0.85, polish:true, master:false, monitor:false, countIn:true, loop:false, stems:true,
+  beatVol:0.85, monitor:false, countIn:true, loop:false, stems:true,
   latency:0,                 // this device's record round-trip, in ms
   sid:null, name:"Session 1",  // the open session; each one is its own beat + takes
   seq:0
@@ -988,11 +787,11 @@ async function saveProject(){
       name:S.name,
       beat: S.beat?{name:S.beat.name,blob:S.beat.blob,bpm:S.beat.bpm||0}:null,
       beatVol:S.beat?S.beatVol:0.85,
-      polish:S.polish, masterBus:S.master, countIn:S.countIn, loop:S.loop, stems:S.stems,
+      countIn:S.countIn, loop:S.loop, stems:S.stems,
       takes:S.takes.map(t=>({
         name:t.name, blob:t.blob, mime:t.mime, offset:t.offset,
         nudge:t.nudge, gain:t.gain, pan:t.pan, mute:t.mute, solo:t.solo,
-        procWav:t.procWav||null, bleedOff:!!t.bleedOff, cleaned:!!t.cleaned, recorded:!!t.recorded
+        recorded:!!t.recorded
       }))
     });
     let e=SESS.list.find(x=>x.id===id);
@@ -1016,8 +815,6 @@ async function loadProject(id){
       beatEnv=null; any=true;
     }
     if(typeof p.beatVol==="number") S.beatVol=p.beatVol;
-    if(typeof p.polish==="boolean") S.polish=p.polish;
-    if(typeof p.masterBus==="boolean") S.master=p.masterBus;
     if(typeof p.countIn==="boolean") S.countIn=p.countIn;
     if(typeof p.loop==="boolean") S.loop=p.loop;
     if(typeof p.stems==="boolean") S.stems=p.stems;
@@ -1025,15 +822,13 @@ async function loadProject(id){
       for(const t of p.takes){
         if(!t.blob) continue;
         try{
-          const proc=!!((t.bleedOff||t.cleaned)&&t.procWav);
-          const src=proc?t.procWav:t.blob;
+          const src=t.blob;            /* always the original recording */
           const buf=await decode(await src.arrayBuffer());
           S.takes.push({
             id:++S.seq, name:t.name||("Take "+(S.takes.length+1)), buffer:buf, blob:t.blob,
             mime:t.mime||"", offset:t.offset||0, nudge:t.nudge||0,
             gain:typeof t.gain==="number"?t.gain:1, pan:t.pan||0,
             mute:!!t.mute, solo:!!t.solo,
-            procWav:proc?t.procWav:null, bleedOff:proc&&!!t.bleedOff, cleaned:proc&&!!t.cleaned,
             recorded:!!t.recorded
           });
           any=true;
@@ -1063,7 +858,7 @@ function setActive(id){
 function resetProject(){
   stopAll();
   S.beat=null; S.takes=[]; S.beatVol=0.85; S.playhead=0;
-  S.polish=true; S.master=false; S.countIn=true; S.loop=false; S.stems=true;
+  S.countIn=true; S.loop=false; S.stems=true;
   beatEnv=null;
 }
 /* Finish writing the open session before anything replaces it. */
@@ -1259,8 +1054,8 @@ function renderCheck(){
 
   $("recBtn").disabled = !v.ok;
   $("footNote").textContent = v.ok
-    ? "Wired headphones beat Bluetooth here — Bluetooth adds 150-300ms and drops iOS into call quality · first take off the beat? slide SYNC till it locks, then LOCK THIS SYNC IN and every take after lands right · ALIGN only works on takes that have the beat bleeding into them, so with headphones on, use SYNC"
-    : "Import path, three steps: play the beat out loud and rap over it into Voice Memos · import that take here · hit ALIGN TO BEAT, then REMOVE BLEED — BOOTH locks it to the grid and subtracts the beat that leaked into your mic.";
+    ? "Wired headphones beat Bluetooth here — Bluetooth adds 150-300ms and drops iOS into call quality · first take off the beat? slide SYNC till it locks, then LOCK SYNC and every take after lands right · ALIGN only works on takes that have the beat bleeding into them, so with headphones on, use SYNC"
+    : "Import path, two steps: play the beat out loud and rap over it into Voice Memos · import that take here and hit ALIGN — BOOTH locks it to the beat.";
 }
 
 /* ============================ timeline ============================ */
@@ -1367,13 +1162,8 @@ function takeRow(t,i){
     '</div>'+
     '<div class="acts">'+
       '<button class="btn sm" data-act="starthere" title="Move this take to start at the playhead">Start here</button>'+
-      '<button class="btn sm'+(t.bleedOff?" done":"")+'" data-act="bleed">'+(t.bleedOff?"Bleed off":"Remove bleed")+'</button>'+
-      '<button class="btn sm'+(t.cleaned?" done":"")+'" data-act="clean">'+(t.cleaned?"Cleaned":"Clean vocal")+'</button>'+
-    '</div>'+
-    ((t.bleedOff||t.cleaned)?'<div class="acts"><button class="btn sm" data-act="restore">Restore original take</button></div>':'')+
-    '<div class="acts">'+
       '<button class="btn sm" data-act="setdelay"'+(t.nudge?'':' disabled')+'>'+
-        'Lock this sync in for every take</button>'+
+        'Lock sync for every take</button>'+
     '</div>';
   const cv=el.querySelector("canvas");
   requestAnimationFrame(()=>drawWave(cv,t.buffer,"#F04E23"));
@@ -1407,7 +1197,7 @@ function renderMix(){
   $("exportNote").textContent = has
     ? (S.stems?"A .zip holding mix.wav plus every stem":"A .zip holding mix.wav")
     : "Load a beat or a take first";
-  setTog("tgPolish",S.polish); setTog("tgMaster",S.master); setTog("tgMonitor",S.monitor);
+  setTog("tgMonitor",S.monitor);
   setTog("tgCount",S.countIn); setTog("tgLoop",S.loop); setTog("tgStems",S.stems);
 }
 function setTog(id,on){ $(id).setAttribute("aria-pressed",on?"true":"false"); }
@@ -1431,12 +1221,11 @@ function renderHeads(){
 /* ============================ playback ============================ */
 /* Nodes of the running playback, kept so sliders change the sound live
    instead of waiting for the next play. */
-let liveN={beat:null,takes:new Map(),bus:null}, playTok=0, restartT=0;
+let liveN={beat:null,takes:new Map()}, playTok=0, restartT=0;
 function stopSources(){
   for(const s of live){ try{ s.stop(); }catch(e){} }
   live=[];
-  if(liveN.bus){ try{ liveN.bus.out.disconnect(); }catch(e){} }
-  liveN={beat:null,takes:new Map(),bus:null};
+  liveN={beat:null,takes:new Map()};
 }
 function audible(t){
   const soloOn=S.takes.some(x=>x.solo);
@@ -1489,10 +1278,7 @@ async function play(from){
   stopSources();
   const lead=0.09, at=c.currentTime+lead;
   t0=at; p0=from;
-  const bus=S.master?masterChain(c):null;
-  if(bus) bus.out.connect(c.destination);
-  const dest=bus?bus.input:c.destination;
-  liveN.bus=bus;
+  const dest=c.destination;
 
   if(S.beat&&from<S.beat.buffer.duration){
     const s=c.createBufferSource(); s.buffer=S.beat.buffer;
@@ -1506,7 +1292,6 @@ async function play(from){
     const s=c.createBufferSource(); s.buffer=t.buffer;
     const g=c.createGain(); g.gain.value=audible(t)?t.gain:0;
     let node=s;
-    if(S.polish){ const ch=vocalChain(c); s.connect(ch.input); node=ch.out; }
     let pan=null;
     if(c.createStereoPanner){ pan=c.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
     if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
@@ -1622,7 +1407,10 @@ async function startRec(){
   if(S.countIn) await countIn(c);
 
   recMime=ENV.mime;
-  try{ recorder=new MediaRecorder(st,recMime?{mimeType:recMime}:undefined); }
+  /* Browsers default to a low, voice-call bitrate; ask for a music one. */
+  const ro={audioBitsPerSecond:256000};
+  if(recMime) ro.mimeType=recMime;
+  try{ recorder=new MediaRecorder(st,ro); }
   catch(e){
     try{ recorder=new MediaRecorder(st); recMime=recorder.mimeType||""; }
     catch(e2){ toast("This browser can't record audio.","bad"); return; }
@@ -1691,7 +1479,7 @@ function alignTake(t){
     return;
   }
   let ms=((coarse.lag+fine.lag)/FPS)*1000;
-  /* refine to the sample so bleed removal has something exact to work with */
+  /* refine to the sample */
   try{
     const sr=t.buffer.sampleRate;
     const bm=toMono(S.beat.buffer), tm=toMono(t.buffer);
@@ -1706,46 +1494,6 @@ function alignTake(t){
     : "Aligned "+t.name+" — moved "+(t.nudge>0?"+":"")+t.nudge+"ms, match "+Math.round(coarse.score*100)+"%.","good");
 }
 
-async function restoreTake(t){
-  try{
-    t.buffer=await decode(await t.blob.arrayBuffer());
-    t.bleedOff=false; t.cleaned=false; t.procWav=null;
-    renderAll(); scheduleSave(); restartSoon();
-    toast("Restored the original take.");
-  }catch(e){ toast("Couldn't restore that take.","bad"); }
-}
-function storeProc(t){
-  try{ t.procWav=new Blob([encodeWAV(t.buffer)],{type:"audio/wav"}); }catch(e){ t.procWav=null; }
-}
-async function cleanTake(t,btn){
-  if(t.cleaned){ toast("Already cleaned. RESTORE ORIGINAL TAKE undoes it."); return; }
-  if(btn){ btn.textContent="Working…"; btn.disabled=true; }
-  await new Promise(r=>setTimeout(r,40));   /* let "Working…" paint first */
-  try{
-    const r=cleanVocal(t.buffer);
-    t.buffer=r.buffer; t.cleaned=true; storeProc(t);
-    renderAll(); scheduleSave(); restartSoon();
-    toast("Cleaned "+t.name+" — background noise down "+Math.abs(r.dB).toFixed(1)+"dB, harsh S's tamed.","good");
-  }catch(e){
-    if(btn){ btn.textContent="Clean vocal"; btn.disabled=false; }
-    toast("Clean-up failed: "+(e.message||e),"bad");
-  }
-}
-async function bleedTake(t,btn){
-  if(!S.beat){ toast("Load the beat first — there's nothing to subtract without it.","bad"); return; }
-  if(t.bleedOff){ toast("Bleed is already off. RESTORE ORIGINAL TAKE undoes it."); return; }
-  const old=btn?btn.textContent:"";
-  if(btn){ btn.textContent="Working…"; btn.disabled=true; }
-  try{
-    const r=await removeBleed(t);
-    t.buffer=r.buffer; t.bleedOff=true; storeProc(t);
-    renderAll(); scheduleSave(); restartSoon();
-    toast("Bleed pulled down "+Math.abs(r.dB).toFixed(1)+"dB on "+t.name+". Solo it to hear what's left.","good");
-  }catch(e){
-    if(btn){ btn.textContent=old; btn.disabled=false; }
-    toast("Bleed removal failed: "+(e.message||e),"bad");
-  }
-}
 
 /* ============================ export ============================ */
 /* A latency-corrected take can start before 0:00 — skip its head instead
@@ -1759,9 +1507,7 @@ async function renderMixBuffer(withTakesOnly){
   const c=AC(), sr=c.sampleRate, total=duration();
   const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
   const off=new OAC(2,Math.max(1,Math.ceil(total*sr)),sr);
-  const bus=S.master?masterChain(off):null;
-  if(bus) bus.out.connect(off.destination);
-  const dest=bus?bus.input:off.destination;
+  const dest=off.destination;
   if(S.beat&&!withTakesOnly){
     const s=off.createBufferSource(); s.buffer=S.beat.buffer;
     const g=off.createGain(); g.gain.value=S.beatVol;
@@ -1772,7 +1518,6 @@ async function renderMixBuffer(withTakesOnly){
     const s=off.createBufferSource(); s.buffer=t.buffer;
     const g=off.createGain(); g.gain.value=t.gain;
     let node=s;
-    if(S.polish){ const ch=vocalChain(off); s.connect(ch.input); node=ch.out; }
     let pan=null;
     if(off.createStereoPanner){ pan=off.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
     if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
@@ -1789,7 +1534,6 @@ async function renderStem(t){
   const s=off.createBufferSource(); s.buffer=t.buffer;
   const g=off.createGain(); g.gain.value=t.gain;
   let node=s;
-  if(S.polish){ const ch=vocalChain(off); s.connect(ch.input); node=ch.out; }
   let pan=null;
   if(off.createStereoPanner){ pan=off.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
   if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
@@ -1809,7 +1553,7 @@ async function doExport(){
     const base=safeName(S.beat?S.beat.name:"booth");
     const files=[];
     const mix=await renderMixBuffer(false);
-    finishLevel(mix);
+    clipGuard(mix);
     files.push({name:base+"_mix.wav",data:encodeWAV(mix)});
     if(S.stems){
       if(S.beat) files.push({name:"stems/beat.wav",data:encodeWAV(S.beat.buffer)});
@@ -1825,8 +1569,7 @@ async function doExport(){
       "beat: "+(S.beat?S.beat.name:"(none)")+"\n"+
       "length: "+fmt(duration())+"\n"+
       "takes: "+S.takes.length+"\n"+
-      "vocal polish: "+(S.polish?"on":"off")+"\n"+
-      "master bus: "+(S.master?"on":"off")+"\n\n"+
+      "\n"+
       S.takes.map((t,i)=>(i+1)+". "+t.name+" — start "+fmt(t.offset)+", sync "+(t.nudge>0?"+":"")+t.nudge+
         "ms, level "+Math.round(t.gain*100)+", pan "+(t.pan===0?"C":(t.pan<0?"L":"R")+Math.round(Math.abs(t.pan)*100))+
         (t.mute?", muted":"")).join("\n")+"\n";
@@ -1945,9 +1688,6 @@ $("takeList").addEventListener("click",e=>{
   if(act==="mute"){ t.mute=!t.mute; renderAll(); applyLive(); scheduleSave(); }
   else if(act==="solo"){ t.solo=!t.solo; renderAll(); applyLive(); scheduleSave(); }
   else if(act==="align"){ alignTake(t); restartSoon(); }
-  else if(act==="bleed"){ bleedTake(t,btn); }
-  else if(act==="clean"){ cleanTake(t,btn); }
-  else if(act==="restore"){ restoreTake(t); }
   /* Scrub to where the take should begin, then drop it there. This is how
      a take that begins ten seconds before the beat gets into range —
      ALIGN only refines, it can't search the whole song. */
@@ -2010,8 +1750,6 @@ function bindTog(id,key,after){
     renderMix(); scheduleSave();
   });
 }
-bindTog("tgPolish","polish",()=>{ if(S.playing) play(nowPos()); });
-bindTog("tgMaster","master",()=>{ if(S.playing) play(nowPos()); });
 bindTog("tgMonitor","monitor");
 bindTog("tgCount","countIn");
 bindTog("tgLoop","loop");
