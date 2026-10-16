@@ -19,6 +19,9 @@ fits it. Rules taken from real use:
   you can't see and reverse.
 - **Record-first layout.** Keep the controls you need while recording in reach
   without scrolling; push setup and diagnostics out of the way.
+- **Mobile only.** Everyone records on a phone with headphones. No features
+  that assume a speaker, studio monitors or a live room (Align, bleed removal
+  and the vocal processing were removed for this reason).
 - **Your data stays on your phone.** Sessions are saved in each person's own
   browser and are never shared through the link.
 
@@ -29,6 +32,8 @@ fits it. Rules taken from real use:
 - Live volume, pan, mute and solo during playback; sync restarts in place
 - Finger scrubbing on the transport bar and every lane
 - Drag takes to move them; undo for every edit (button and Ctrl/Cmd+Z)
+- Align removed; the beat's tempo is now measured on load so the Bar buttons
+  always work
 - Raw audio only: the vocal processing was removed after it made takes sound
   worse; recording asks for 256kbps
 

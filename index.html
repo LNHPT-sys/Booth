@@ -579,7 +579,7 @@ function zipStore(files){
   return new Blob([...parts,...central,new Uint8Array(eo)],{type:"application/zip"});
 }
 
-/* ============================ auto-align ============================ */
+/* ============================ tempo ============================ */
 const FPS=100;
 function envelope(buf){
   const d=buf.getChannelData(0), sr=buf.sampleRate;
@@ -598,106 +598,6 @@ function envelope(buf){
   for(let i=1;i<n;i++){ const d=e[i]-e[i-1]; o[i]=d>0?d:0; }
   return o;
 }
-function stats(a,from,len){
-  let m=0,n=0;
-  for(let i=0;i<len;i++){ const v=a[from+i]; if(v===undefined) continue; m+=v; n++; }
-  if(!n) return null;
-  m/=n; let s=0;
-  for(let i=0;i<len;i++){ const v=a[from+i]; if(v===undefined) continue; s+=(v-m)*(v-m); }
-  s=Math.sqrt(s/n);
-  return {m:m,s:s||1e-9,n:n};
-}
-/* find lag (frames) that best aligns take envelope t onto beat envelope b at base offset */
-function bestLag(b,t,base,maxLag,step){
-  const none={lag:0,score:-2};
-  const len=Math.min(t.length, b.length-base+maxLag);
-  if(len<40) return none;
-  const ts=stats(t,0,Math.min(t.length,len));
-  if(!ts) return none;
-  const cands=[];
-  let peak=-2;
-  for(let L=-maxLag;L<=maxLag;L+=step){
-    const s0=base+L;
-    const from=Math.max(0,-s0);
-    const n=Math.min(t.length-from, b.length-(s0+from));
-    if(n<40) continue;
-    const bs=stats(b,s0+from,n); if(!bs) continue;
-    let acc=0;
-    for(let i=0;i<n;i++){
-      const tv=t[from+i], bv=b[s0+from+i];
-      if(tv===undefined||bv===undefined) continue;
-      acc+=(tv-ts.m)*(bv-bs.m);
-    }
-    /* Weight by how much of the take actually overlapped. Without this a
-       partial overlap can post a higher score than the true alignment
-       purely because it was scored on less evidence. */
-    const sc=(acc/(n*ts.s*bs.s))*(n/t.length);
-    cands.push({lag:L,score:sc});
-    if(sc>peak) peak=sc;
-  }
-  if(peak<=0) return {lag:0,score:peak};
-  /* A loop repeats, so a bar-length shift can score as well as the truth.
-     Among peaks that are statistically tied, take the nearest one —
-     musically the take is late by milliseconds, not by a whole bar. */
-  const thr=peak*0.97;
-  let best=null;
-  for(const c of cands){
-    if(c.score>=thr && (!best||Math.abs(c.lag)<Math.abs(best.lag))) best=c;
-  }
-  best=best||{lag:0,score:peak};
-  /* If a rival peak a bar away scores anywhere near as well, the beat is
-     too self-similar to be sure. Warn generously — a needless "check it"
-     costs nothing, a silent bar-error costs a whole take. This bar is
-     deliberately looser than the tie-break above: different job. */
-  let rival=false;
-  const warn=peak*0.93;
-  for(const c of cands){
-    if(c.score>=warn && Math.abs(c.lag-best.lag)>15){ rival=true; break; }
-  }
-  return {lag:best.lag, score:best.score, ambiguous:rival};
-}
-
-/* ---- sample-accurate alignment ---- */
-function toMono(buf){
-  const n=buf.length, ch=buf.numberOfChannels, out=new Float32Array(n);
-  for(let c=0;c<ch;c++){
-    const d=buf.getChannelData(c);
-    for(let i=0;i<n;i++) out[i]+=d[i];
-  }
-  if(ch>1) for(let i=0;i<n;i++) out[i]/=ch;
-  return out;
-}
-/* refine alignment to the sample, using the take's loudest passages */
-function fineAlign(bm,tm,base,range,sr){
-  const win=Math.min(Math.floor(sr*0.45),tm.length);
-  if(win<2000) return 0;
-  const starts=[], seg=Math.floor(tm.length/3), hop=Math.floor(sr*0.1);
-  for(let k=0;k<3;k++){
-    let bi=-1,be=0;
-    const lim=Math.min((k+1)*seg,tm.length-win);
-    for(let s=k*seg;s<lim;s+=hop){
-      let e=0;
-      for(let i=0;i<win;i+=16) e+=tm[s+i]*tm[s+i];
-      if(e>be){ be=e; bi=s; }
-    }
-    if(bi>=0) starts.push(bi);
-  }
-  if(!starts.length) return 0;
-  let best=0,bs=-Infinity;
-  for(let d=-range;d<=range;d++){
-    let acc=0,bad=false;
-    for(const s of starts){
-      const b0=base+s+d;
-      if(b0<0||b0+win>=bm.length){ bad=true; break; }
-      for(let i=0;i<win;i+=2) acc+=tm[s+i]*bm[b0+i];
-    }
-    if(bad) continue;
-    if(acc>bs){ bs=acc; best=d; }
-  }
-  return best;
-}
-
-
 /* Tempo from the beat's own onset curve: autocorrelate and take the
    strongest period. Used to shift a take by exact bars. */
 function detectBPM(env){
@@ -746,7 +646,7 @@ function saveLatency(){
 const ENV={ framed:false, policy:null, perm:null, mime:"", secure:false, md:false, caps:null, host:"", micErr:"" };
 
 let stream=null, recorder=null, chunks=[], recMime="", micSrc=null, monGain=null, analyser=null;
-let live=[], t0=0, p0=0, recFrom=0, raf=0, mraf=0, beatEnv=null, saveTimer=0;
+let live=[], t0=0, p0=0, recFrom=0, raf=0, mraf=0, saveTimer=0;
 
 /* ============================ persistence (IndexedDB) ============================ */
 const DB={ db:null, ok:false };
@@ -830,7 +730,8 @@ async function loadProject(id){
     if(p.beat&&p.beat.blob){
       const buf=await decode(await p.beat.blob.arrayBuffer());
       S.beat={name:p.beat.name,buffer:buf,blob:p.beat.blob,bpm:p.beat.bpm||0};
-      beatEnv=null; any=true;
+      if(!S.beat.bpm) S.beat.bpm=detectBPM(envelope(buf));
+      any=true;
     }
     if(typeof p.beatVol==="number") S.beatVol=p.beatVol;
     if(typeof p.countIn==="boolean") S.countIn=p.countIn;
@@ -877,7 +778,6 @@ function resetProject(){
   stopAll();
   S.beat=null; S.takes=[]; S.beatVol=0.85; S.playhead=0;
   S.countIn=true; S.loop=false; S.stems=true;
-  beatEnv=null;
 }
 /* Finish writing the open session before anything replaces it. */
 async function flushSave(){ clearTimeout(saveTimer); await saveProject(); }
@@ -1043,10 +943,10 @@ function renderCheck(){
       : "Hit the red button and allow the microphone when your phone asks.";
   } else if(v.why==="frame"){
     title.textContent = "Recording is blocked in this window";
-    sub.textContent = "This copy of BOOTH is running inside the chat, and a page inside chat isn't allowed to reach the microphone — no phone setting changes that. Open BOOTH in its own window (the expand control on this artifact) and the mic prompt will fire. Everything else on this page works right here: import takes, align them, mix and export.";
+    sub.textContent = "This copy of BOOTH is running inside the chat, and a page inside chat isn't allowed to reach the microphone — no phone setting changes that. Open BOOTH in its own window (the expand control on this artifact) and the mic prompt will fire. Everything else on this page works right here: import takes, mix and export.";
   } else {
     title.textContent = "Recording unavailable";
-    sub.textContent = v.why + " You can still import takes, align them, mix and export.";
+    sub.textContent = v.why + " You can still import takes, mix and export.";
   }
 
   const rows=[
@@ -1070,8 +970,8 @@ function renderCheck(){
 
   $("recBtn").disabled = !v.ok;
   $("footNote").textContent = v.ok
-    ? "Wired headphones beat Bluetooth here — Bluetooth adds 150-300ms and drops iOS into call quality · first take off the beat? slide SYNC till it locks, then LOCK SYNC and every take after lands right · ALIGN only works on takes that have the beat bleeding into them, so with headphones on, use SYNC"
-    : "Import path, two steps: play the beat out loud and rap over it into Voice Memos · import that take here and hit ALIGN — BOOTH locks it to the beat.";
+    ? "Wired headphones beat Bluetooth here — Bluetooth adds 150-300ms and drops iOS into call quality · first take off the beat? slide SYNC till it locks, then LOCK SYNC and every take after lands right"
+    : "Recording is off here, so import takes you cut elsewhere and drag them into place.";
 }
 
 /* ============================ timeline ============================ */
@@ -1173,7 +1073,6 @@ function takeRow(t,i){
     '</div>'+
     '<div class="acts">'+
       '<button class="btn sm" data-act="barback" title="Back one bar">&#9664; Bar</button>'+
-      '<button class="btn sm" data-act="align">Align</button>'+
       '<button class="btn sm" data-act="barfwd" title="Forward one bar">Bar &#9654;</button>'+
     '</div>'+
     '<div class="acts">'+
@@ -1253,7 +1152,7 @@ function renderUndo(){ $("undoBtn").disabled=!UNDO.length||S.recording; }
 function undo(){
   if(S.recording||!UNDO.length) return;
   const u=UNDO.pop();
-  if(u.beat!==S.beat){ S.beat=u.beat; beatEnv=null; }
+  S.beat=u.beat;
   S.beatVol=u.beatVol;
   if(u.latency!==S.latency){ S.latency=u.latency; saveLatency(); renderCheck(); }
   S.takes=u.takes.map(x=>Object.assign(x.t,x.p));
@@ -1493,7 +1392,7 @@ async function finishRec(){
     /* no clamp at zero: recording from the top is the normal case, and
        clamping there threw the whole latency correction away */
     addTake(buf,blob,recMime,recFrom-S.latency/1000,"Take "+(S.takes.length+1),true);
-    toast("Take "+S.takes.length+" captured — "+fmt(buf.duration).slice(0,5)+". Hit ALIGN if it sits off the beat.","good");
+    toast("Take "+S.takes.length+" captured — "+fmt(buf.duration).slice(0,5)+". Off the beat? Slide SYNC or drag it.","good");
   }catch(e){
     toast("Couldn't read that take back: "+(e.message||e),"bad");
   }
@@ -1509,38 +1408,6 @@ function addTake(buffer,blob,mime,offset,name,recorded){
   });
   renderAll(); scheduleSave();
 }
-
-/* ============================ align ============================ */
-function alignTake(t){
-  if(!S.beat){ toast("Load the beat first — align needs something to line up against.","bad"); return; }
-  if(!beatEnv){ beatEnv=envelope(S.beat.buffer); if(!S.beat.bpm) S.beat.bpm=detectBPM(beatEnv); }
-  const te=envelope(t.buffer);
-  const base=Math.round(t.offset*FPS);
-  /* A take cut here can only drift by input latency, so search tight and
-     stay immune to bar-jumps. An imported take could start anywhere. */
-  const span=t.recorded?Math.round(0.6*FPS):Math.round(1.5*FPS);
-  const coarse=bestLag(beatEnv,te,base,span,4);
-  const fine=bestLag(beatEnv,te,base+coarse.lag,6,1);
-  if(coarse.score<0.12){
-    toast("Couldn't hear the beat inside that take, so there's nothing to lock onto. Slide SYNC by ear instead.","bad");
-    return;
-  }
-  let ms=((coarse.lag+fine.lag)/FPS)*1000;
-  /* refine to the sample */
-  try{
-    const sr=t.buffer.sampleRate;
-    const bm=toMono(S.beat.buffer), tm=toMono(t.buffer);
-    const base=Math.round((t.offset+ms/1000)*sr);
-    const d=fineAlign(bm,tm,base,Math.round(sr*0.012),sr);
-    ms+=(d/sr)*1000;
-  }catch(e){}
-  t.nudge=clamp(Math.round(ms),-600,600);
-  renderAll(); scheduleSave();
-  toast(coarse.ambiguous
-    ? "Aligned "+t.name+" to "+(t.nudge>0?"+":"")+t.nudge+"ms, but this beat loops so cleanly that a whole bar off scores the same. Play it back — if it's out, slide SYNC by one bar."
-    : "Aligned "+t.name+" — moved "+(t.nudge>0?"+":"")+t.nudge+"ms, match "+Math.round(coarse.score*100)+"%.","good");
-}
-
 
 /* ============================ export ============================ */
 /* A latency-corrected take can start before 0:00 — skip its head instead
@@ -1664,8 +1531,7 @@ async function loadBeatFile(file){
     const blob=file.slice(0,file.size,file.type||"audio/mpeg");
     const buf=await decode(await file.arrayBuffer());
     pushUndo();
-    S.beat={name:file.name,buffer:buf,blob:blob};
-    beatEnv=null;
+    S.beat={name:file.name,buffer:buf,blob:blob,bpm:detectBPM(envelope(buf))};
     S.playhead=0; stopAll(); renderAll(); scheduleSave();
     toast("Beat loaded — "+fmt(buf.duration).slice(0,5)+".","good");
   }catch(e){
@@ -1682,7 +1548,7 @@ async function loadTakeFiles(files){
       n++;
     }catch(e){}
   }
-  if(n) toast(n+(n===1?" take imported":" takes imported")+" at 00:00 — hit ⊹ ALIGN to lock "+(n===1?"it":"them")+" to the beat.","good");
+  if(n) toast(n+(n===1?" take imported":" takes imported")+" at 00:00 — drag "+(n===1?"it":"them")+" into place.","good");
   else toast("Couldn't read that file as audio.","bad");
 }
 
@@ -1725,7 +1591,7 @@ $("clearSess").addEventListener("click",()=>{
   if(S.recording){ toast("Stop recording first.","bad"); return; }
   if(!S.beat&&!S.takes.length){ toast("This session is already empty."); return; }
   pushUndo();
-  S.beat=null; beatEnv=null; S.takes=[];
+  S.beat=null; S.takes=[];
   stopAll(); renderAll(); scheduleSave();
   toast("Cleared "+S.name+". Undo brings it back.");
 });
@@ -1750,7 +1616,6 @@ $("takeList").addEventListener("click",e=>{
     pushUndo(); t.solo=!t.solo; renderAll(); applyLive(); scheduleSave();
     if(t.solo) toast("Solo: you'll hear only "+t.name+" — the beat and other takes go quiet. Tap Solo again to hear everything.");
   }
-  else if(act==="align"){ pushUndo(); alignTake(t); restartSoon(); }
   else if(act==="setdelay"){
     if(!t.nudge){ toast("Slide SYNC until this take sits right, then lock it in."); return; }
     pushUndo();
