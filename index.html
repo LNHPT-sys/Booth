@@ -393,11 +393,11 @@
     <div class="eyebrow"><h2>Mix</h2></div>
     <div class="card" style="padding-block:4px 14px;">
       <button class="tog" id="tgPolish" aria-pressed="true">
-        <span><span class="lab">Vocal polish</span><span class="sub">High-pass, compression, air, light room</span></span>
+        <span><span class="lab">Vocal polish</span><span class="sub">Rumble cut, light compression, a touch of room</span></span>
         <span class="sw"><i></i></span>
       </button>
-      <button class="tog" id="tgMaster" aria-pressed="true">
-        <span><span class="lab">Master bus</span><span class="sub">Glue compression and a limiter on the whole mix — louder, no clipping</span></span>
+      <button class="tog" id="tgMaster" aria-pressed="false">
+        <span><span class="lab">Master bus</span><span class="sub">Light glue and a peak limiter on the whole mix — stops clipping</span></span>
         <span class="sw"><i></i></span>
       </button>
       <button class="tog" id="tgMonitor" aria-pressed="false">
@@ -502,29 +502,34 @@ function impulse(c,sec,decay){
   return b;
 }
 
-/* Rap vocal chain: HPF -> de-boom -> presence -> air -> comp -> dry + short room */
+/* Rap vocal chain: HPF -> de-boom -> presence -> air -> comp -> dry + short room.
+   Kept light on purpose. The browser's compressor adds its own makeup
+   gain, which also lifts hiss and breaths, so a trim after it brings the
+   vocal back to roughly the level it went in at. */
+const VTRIM=0.6, MTRIM=0.95;   /* calibrated against the compressors' auto makeup */
 function vocalChain(c,wet){
-  wet = wet==null?0.11:wet;
+  wet = wet==null?0.05:wet;
   const inn=c.createGain();
-  const hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=95; hp.Q.value=0.7;
-  const mud=c.createBiquadFilter(); mud.type="peaking"; mud.frequency.value=330; mud.Q.value=1.1; mud.gain.value=-2.4;
-  const pres=c.createBiquadFilter(); pres.type="peaking"; pres.frequency.value=2600; pres.Q.value=0.9; pres.gain.value=2.2;
-  const air=c.createBiquadFilter(); air.type="highshelf"; air.frequency.value=8200; air.gain.value=2.8;
+  const hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=85; hp.Q.value=0.7;
+  const mud=c.createBiquadFilter(); mud.type="peaking"; mud.frequency.value=330; mud.Q.value=1.0; mud.gain.value=-1.5;
+  const pres=c.createBiquadFilter(); pres.type="peaking"; pres.frequency.value=3000; pres.Q.value=0.8; pres.gain.value=1.2;
+  const air=c.createBiquadFilter(); air.type="highshelf"; air.frequency.value=10000; air.gain.value=1.0;
   const cmp=c.createDynamicsCompressor();
-  cmp.threshold.value=-21; cmp.knee.value=20; cmp.ratio.value=3.6;
-  cmp.attack.value=0.004; cmp.release.value=0.19;
+  cmp.threshold.value=-20; cmp.knee.value=12; cmp.ratio.value=2.2;
+  cmp.attack.value=0.012; cmp.release.value=0.2;
+  const trim=c.createGain(); trim.gain.value=VTRIM;
   const dry=c.createGain(); dry.gain.value=1-wet;
   const wt=c.createGain(); wt.gain.value=wet;
-  const cv=c.createConvolver(); cv.buffer=impulse(c,1.1,3.6);
+  const cv=c.createConvolver(); cv.buffer=impulse(c,0.6,4.5);
   const out=c.createGain();
   inn.connect(hp); hp.connect(mud); mud.connect(pres); pres.connect(air); air.connect(cmp);
-  cmp.connect(dry); dry.connect(out);
-  cmp.connect(cv); cv.connect(wt); wt.connect(out);
+  cmp.connect(trim); trim.connect(dry); dry.connect(out);
+  trim.connect(cv); cv.connect(wt); wt.connect(out);
   return {input:inn,out:out};
 }
 
-/* Master bus: subsonic cut -> gentle glue -> brickwall-style limiter.
-   Sits on the whole mix, live and in the export. */
+/* Master bus: subsonic cut -> light glue -> limiter that only catches
+   peaks. Sits on the whole mix, live and in the export. Off by default. */
 function masterChain(c){
   const comp=(thr,ratio,knee,att,rel)=>{
     const k=c.createDynamicsCompressor();
@@ -533,10 +538,11 @@ function masterChain(c){
   };
   const inn=c.createGain();
   const hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=28; hp.Q.value=0.7;
-  const glue=comp(-16,2,8,0.025,0.25);
-  const lim=comp(-2,20,0,0.001,0.08);
+  const glue=comp(-12,1.5,10,0.03,0.25);
+  const trim=c.createGain(); trim.gain.value=MTRIM;
+  const lim=comp(-1,20,0,0.001,0.08);
   const out=c.createGain(); out.gain.value=0.84;
-  inn.connect(hp); hp.connect(glue); glue.connect(lim); lim.connect(out);
+  inn.connect(hp); hp.connect(glue); glue.connect(trim); trim.connect(lim); lim.connect(out);
   return {input:inn,out:out};
 }
 
@@ -598,18 +604,18 @@ function cleanVocal(buf){
       fft(re,im);
       for(let k=0;k<nb;k++){
         const P=re[k]*re[k]+im[k]*im[k];
-        let v=1-1.6*Pn[k]/(P+1e-12);
-        if(v<0.14) v=0.14;
+        let v=1-1.0*Pn[k]/(P+1e-12);
+        if(v<0.35) v=0.35;           /* -9dB max: thins noise, never hollows the voice */
         /* open fast, close slow — kills the warbly "musical noise" */
-        if(v<gp[k]*0.72) v=gp[k]*0.72;
+        if(v<gp[k]*0.86) v=gp[k]*0.86;
         g[k]=v; gp[k]=v;
       }
       for(let k=0;k<nb;k++) gs[k]=(g[Math.max(0,k-1)]+g[k]+g[Math.min(nb-1,k+1)])/3;
       /* de-ess: if 5-10kHz carries too much of the frame, duck that band */
       let eb=0,et=0;
       for(let k=kLo;k<nb;k++){ const P=(re[k]*re[k]+im[k]*im[k])*gs[k]*gs[k]; et+=P; if(k>=sLo&&k<=sHi) eb+=P; }
-      if(et>0&&eb/et>0.45){
-        const a=Math.max(0.4,Math.sqrt(0.45*(et-eb)/(0.55*eb)));
+      if(et>0&&eb/et>0.55){
+        const a=Math.max(0.6,Math.sqrt(0.55*(et-eb)/(0.45*eb)));
         for(let k=sLo;k<=sHi;k++) gs[k]*=a;
       }
       for(let k=0;k<nb;k++){
@@ -906,7 +912,7 @@ const S={
   beat:null,                 // {name, buffer, blob}
   takes:[],                  // {id,name,buffer,blob,mime,offset,nudge,gain,pan,mute,solo}
   playing:false, recording:false, playhead:0,
-  beatVol:0.85, polish:true, master:true, monitor:false, countIn:true, loop:false, stems:true,
+  beatVol:0.85, polish:true, master:false, monitor:false, countIn:true, loop:false, stems:true,
   latency:0,                 // this device's record round-trip, in ms
   sid:null, name:"Session 1",  // the open session; each one is its own beat + takes
   seq:0
@@ -982,7 +988,7 @@ async function saveProject(){
       name:S.name,
       beat: S.beat?{name:S.beat.name,blob:S.beat.blob,bpm:S.beat.bpm||0}:null,
       beatVol:S.beat?S.beatVol:0.85,
-      polish:S.polish, master:S.master, countIn:S.countIn, loop:S.loop, stems:S.stems,
+      polish:S.polish, masterBus:S.master, countIn:S.countIn, loop:S.loop, stems:S.stems,
       takes:S.takes.map(t=>({
         name:t.name, blob:t.blob, mime:t.mime, offset:t.offset,
         nudge:t.nudge, gain:t.gain, pan:t.pan, mute:t.mute, solo:t.solo,
@@ -1011,7 +1017,7 @@ async function loadProject(id){
     }
     if(typeof p.beatVol==="number") S.beatVol=p.beatVol;
     if(typeof p.polish==="boolean") S.polish=p.polish;
-    if(typeof p.master==="boolean") S.master=p.master;
+    if(typeof p.masterBus==="boolean") S.master=p.masterBus;
     if(typeof p.countIn==="boolean") S.countIn=p.countIn;
     if(typeof p.loop==="boolean") S.loop=p.loop;
     if(typeof p.stems==="boolean") S.stems=p.stems;
@@ -1057,7 +1063,7 @@ function setActive(id){
 function resetProject(){
   stopAll();
   S.beat=null; S.takes=[]; S.beatVol=0.85; S.playhead=0;
-  S.polish=true; S.master=true; S.countIn=true; S.loop=false; S.stems=true;
+  S.polish=true; S.master=false; S.countIn=true; S.loop=false; S.stems=true;
   beatEnv=null;
 }
 /* Finish writing the open session before anything replaces it. */
