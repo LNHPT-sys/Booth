@@ -151,7 +151,18 @@
   /* pan-y: vertical swipes still scroll the page, sideways drags scrub */
   .lane{touch-action:pan-y;cursor:ew-resize;}
   .lane.beat{height:56px;}
-  .clip{position:absolute;top:0;bottom:0;background:rgba(240,78,35,.07);border-left:1px solid var(--rec-deep);border-right:1px solid var(--rec-deep);}
+  .clip{position:absolute;top:0;bottom:0;background:rgba(240,78,35,.07);border-left:1px solid var(--rec-deep);border-right:1px solid var(--rec-deep);cursor:grab;}
+  .clip.grab{background:rgba(240,78,35,.18);cursor:grabbing;}
+  .lane.beat.silent{opacity:.35;}
+  .tbtn{
+    height:27px;border-radius:4px;border:1px solid var(--edge2);background:transparent;color:var(--ash);
+    font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;
+    padding:0 9px;flex:none;
+  }
+  .tbtn:hover{color:var(--bone);border-color:var(--ash2);}
+  .tbtn.on{background:var(--brass);border-color:var(--brass);color:#17140F;font-weight:700;}
+  .tbtn.on.red{background:var(--rec);border-color:var(--rec);color:#fff;}
+  .tbtn[disabled]{opacity:.38;cursor:default;}
   .clip canvas,.lane>canvas{display:block;width:100%;height:100%;}
   .head{
     position:absolute;top:0;bottom:0;width:1.5px;background:var(--brass);pointer-events:none;
@@ -321,7 +332,11 @@
     <div class="card">
       <div class="take-head" style="margin-bottom:0;">
         <input class="take-name" id="sessName" maxlength="40" aria-label="Session name">
-        <span class="meta" id="sessMeta" style="font-family:var(--mono);font-size:10px;color:var(--ash2);"></span>
+        <button class="tbtn" id="clearSess" title="Remove the beat and every take from this session">Clear</button>
+      </div>
+      <div class="eyebrow" style="margin:14px 0 0;">
+        <span class="meta">Your saved sessions — tap one to open it</span>
+        <span class="meta" id="sessMeta"></span>
       </div>
       <div class="sess-list" id="sessList"></div>
     </div>
@@ -379,7 +394,10 @@
   <section>
     <div class="eyebrow">
       <h2>Takes</h2>
-      <span class="meta" id="takeMeta"></span>
+      <span style="display:flex;align-items:center;gap:10px;">
+        <span class="meta" id="takeMeta"></span>
+        <button class="tbtn" id="undoBtn" disabled title="Undo the last change">&#8630; Undo</button>
+      </span>
     </div>
     <div id="takeList"></div>
     <div class="grid2" style="margin-top:10px;">
@@ -876,6 +894,7 @@ async function openSession(id){
     resetProject();
     const e=SESS.list.find(x=>x.id===id);
     S.sid=id; S.name=e?e.name:"Session";
+    UNDO=[]; renderUndo();
     await loadProject(id);
     setActive(id);
     renderAll(); renderSessions();
@@ -891,6 +910,7 @@ async function newSession(){
     await flushSave();
     resetProject();
     S.sid=newId(); S.name=nextName();
+    UNDO=[]; renderUndo();
     SESS.list.push({id:S.sid,name:S.name,beat:"",takes:0,updated:Date.now()});
     setActive(S.sid);
     await saveProject();
@@ -919,17 +939,13 @@ function renderSessions(){
   const nm=$("sessName");
   if(document.activeElement!==nm) nm.value=S.name;
   const n=SESS.list.length;
-  $("sessMeta").textContent = DB.ok ? (n+(n===1?" saved":" saved")) : "not saved";
+  $("sessMeta").textContent = DB.ok ? String(n) : "not saved";
   const box=$("sessList");
   if(!DB.ok){
     box.innerHTML='<div class="check-sub">Saving is off in this browser, so only one session at a time.</div>';
     return;
   }
   const rows=SESS.list.slice().sort((a,b)=>(b.updated||0)-(a.updated||0));
-  if(rows.length<2){
-    box.innerHTML='<div class="check-sub">Tap NEW SESSION to start another project. Every session keeps its own beat and takes, and they all show up here.</div>';
-    return;
-  }
   box.innerHTML=rows.map(r=>{
     const now=r.id===S.sid;
     const when=r.updated?new Date(r.updated).toLocaleDateString(undefined,{month:"short",day:"numeric"}):"";
@@ -1136,9 +1152,9 @@ function takeRow(t,i){
   el.innerHTML=
     '<div class="take-head">'+
       '<input class="take-name" value="'+String(t.name).replace(/"/g,"&quot;")+'" data-act="name" aria-label="Take name">'+
-      '<button class="mini'+(t.mute?" on red":"")+'" data-act="mute" title="Mute">M</button>'+
-      '<button class="mini'+(t.solo?" on":"")+'" data-act="solo" title="Solo">S</button>'+
-      '<button class="mini" data-act="del" title="Delete take">✕</button>'+
+      '<button class="tbtn'+(t.mute?" on red":"")+'" data-act="mute" title="Silence this take">Mute</button>'+
+      '<button class="tbtn'+(t.solo?" on":"")+'" data-act="solo" title="Hear only this take">Solo</button>'+
+      '<button class="tbtn" data-act="del" title="Delete take" aria-label="Delete take">✕</button>'+
     '</div>'+
     '<div class="lane" data-lane>'+
       '<div class="clip" style="left:'+left.toFixed(3)+'%;width:'+Math.max(0.6,width).toFixed(3)+'%"><canvas></canvas></div>'+
@@ -1161,7 +1177,6 @@ function takeRow(t,i){
       '<button class="btn sm" data-act="barfwd" title="Forward one bar">Bar &#9654;</button>'+
     '</div>'+
     '<div class="acts">'+
-      '<button class="btn sm" data-act="starthere" title="Move this take to start at the playhead">Start here</button>'+
       '<button class="btn sm" data-act="setdelay"'+(t.nudge?'':' disabled')+'>'+
         'Lock sync for every take</button>'+
     '</div>';
@@ -1171,6 +1186,7 @@ function takeRow(t,i){
 }
 
 function renderTakes(){
+  $("beatLane").classList.toggle("silent",S.takes.some(x=>x.solo));
   const list=$("takeList");
   list.innerHTML="";
   $("takeMeta").textContent = S.takes.length?(S.takes.length+(S.takes.length===1?" take":" takes")):"";
@@ -1218,6 +1234,34 @@ function renderHeads(){
   });
 }
 
+/* ============================ undo ============================ */
+/* Every edit snapshots the session first. Takes and the beat are kept by
+   reference — their audio never changes — so a snapshot is just their
+   positions and settings, and undo is instant. */
+let UNDO=[];
+function snap(){
+  return {beat:S.beat, beatVol:S.beatVol, latency:S.latency,
+    takes:S.takes.map(t=>({t:t,p:{offset:t.offset,nudge:t.nudge,gain:t.gain,pan:t.pan,
+      mute:t.mute,solo:t.solo,name:t.name}}))};
+}
+function pushUndo(){
+  UNDO.push(snap());
+  if(UNDO.length>50) UNDO.shift();
+  renderUndo();
+}
+function renderUndo(){ $("undoBtn").disabled=!UNDO.length||S.recording; }
+function undo(){
+  if(S.recording||!UNDO.length) return;
+  const u=UNDO.pop();
+  if(u.beat!==S.beat){ S.beat=u.beat; beatEnv=null; }
+  S.beatVol=u.beatVol;
+  if(u.latency!==S.latency){ S.latency=u.latency; saveLatency(); renderCheck(); }
+  S.takes=u.takes.map(x=>Object.assign(x.t,x.p));
+  renderAll(); renderUndo(); scheduleSave();
+  if(S.playing) play(nowPos());
+  toast("Undone.");
+}
+
 /* ============================ playback ============================ */
 /* Nodes of the running playback, kept so sliders change the sound live
    instead of waiting for the next play. */
@@ -1231,6 +1275,8 @@ function audible(t){
   const soloOn=S.takes.some(x=>x.solo);
   return !t.mute&&!(soloOn&&!t.solo);
 }
+/* Solo means "only this": soloing a take silences the beat as well. */
+function beatLevel(){ return S.takes.some(x=>x.solo)?0:S.beatVol; }
 function liveSet(param,v){
   if(!ctx) return;
   try{ param.cancelScheduledValues(ctx.currentTime); param.setTargetAtTime(v,ctx.currentTime,0.012); }
@@ -1238,7 +1284,7 @@ function liveSet(param,v){
 }
 function applyLive(){
   if(!S.playing) return;
-  if(liveN.beat) liveSet(liveN.beat.gain,S.beatVol);
+  if(liveN.beat) liveSet(liveN.beat.gain,beatLevel());
   for(const t of S.takes){
     const n=liveN.takes.get(t.id); if(!n) continue;
     liveSet(n.gain.gain,audible(t)?t.gain:0);
@@ -1282,7 +1328,7 @@ async function play(from){
 
   if(S.beat&&from<S.beat.buffer.duration){
     const s=c.createBufferSource(); s.buffer=S.beat.buffer;
-    const g=c.createGain(); g.gain.value=S.beatVol;
+    const g=c.createGain(); g.gain.value=beatLevel();
     s.connect(g); g.connect(dest);
     s.start(at,Math.max(0,from)); live.push(s);
     liveN.beat=g;
@@ -1420,7 +1466,7 @@ async function startRec(){
   recorder.onstop=finishRec;
   recFrom=S.playhead;
   recorder.start();
-  S.recording=true;
+  S.recording=true; renderUndo();
   $("recBtn").classList.add("on");
   $("recBtn").setAttribute("aria-label","Stop recording");
   renderMix();
@@ -1434,7 +1480,7 @@ function stopRec(){
 }
 
 async function finishRec(){
-  S.recording=false;
+  S.recording=false; renderUndo();
   $("recBtn").classList.remove("on");
   $("recBtn").setAttribute("aria-label","Record");
   stopMeter();
@@ -1455,6 +1501,7 @@ async function finishRec(){
 }
 
 function addTake(buffer,blob,mime,offset,name,recorded){
+  pushUndo();
   S.takes.push({
     id:++S.seq,name:name,buffer:buffer,blob:blob,mime:mime||"",
     offset:offset||0,nudge:0,gain:1,pan:0,mute:false,solo:false,
@@ -1514,7 +1561,7 @@ async function renderMixBuffer(withTakesOnly){
     s.connect(g); g.connect(dest); s.start(0,0);
   }
   for(const t of S.takes){
-    if(!audible(t)) continue;
+    if(t.mute) continue;          /* solo is for listening; the export is the whole song */
     const s=off.createBufferSource(); s.buffer=t.buffer;
     const g=off.createGain(); g.gain.value=t.gain;
     let node=s;
@@ -1616,6 +1663,7 @@ async function loadBeatFile(file){
   try{
     const blob=file.slice(0,file.size,file.type||"audio/mpeg");
     const buf=await decode(await file.arrayBuffer());
+    pushUndo();
     S.beat={name:file.name,buffer:buf,blob:blob};
     beatEnv=null;
     S.playhead=0; stopAll(); renderAll(); scheduleSave();
@@ -1669,10 +1717,22 @@ $("takeFile").addEventListener("change",e=>{
 });
 $("clearTakes").addEventListener("click",()=>{
   if(!S.takes.length) return;
+  pushUndo();
   S.takes=[]; stopAll(); renderAll(); scheduleSave();
-  toast("All takes cleared.");
+  toast("All takes cleared. Undo brings them back.");
 });
+$("clearSess").addEventListener("click",()=>{
+  if(S.recording){ toast("Stop recording first.","bad"); return; }
+  if(!S.beat&&!S.takes.length){ toast("This session is already empty."); return; }
+  pushUndo();
+  S.beat=null; beatEnv=null; S.takes=[];
+  stopAll(); renderAll(); scheduleSave();
+  toast("Cleared "+S.name+". Undo brings it back.");
+});
+$("undoBtn").addEventListener("click",undo);
+$("beatVol").addEventListener("change",e=>{ delete e.target.dataset.armed; });
 $("beatVol").addEventListener("input",e=>{
+  if(!e.target.dataset.armed){ pushUndo(); e.target.dataset.armed="1"; }
   S.beatVol=parseFloat(e.target.value);
   $("beatVolV").textContent=Math.round(S.beatVol*100);
   applyLive(); scheduleSave();
@@ -1685,19 +1745,15 @@ $("takeList").addEventListener("click",e=>{
 
   if(!btn||btn.tagName==="INPUT") return;
   const act=btn.dataset.act;
-  if(act==="mute"){ t.mute=!t.mute; renderAll(); applyLive(); scheduleSave(); }
-  else if(act==="solo"){ t.solo=!t.solo; renderAll(); applyLive(); scheduleSave(); }
-  else if(act==="align"){ alignTake(t); restartSoon(); }
-  /* Scrub to where the take should begin, then drop it there. This is how
-     a take that begins ten seconds before the beat gets into range —
-     ALIGN only refines, it can't search the whole song. */
-  else if(act==="starthere"){
-    t.offset=S.playhead; t.nudge=0;
-    renderAll(); scheduleSave(); restartSoon();
-    toast(t.name+" starts at "+fmt(t.offset)+" now. Hit ALIGN to lock it to the grid.");
+  if(act==="mute"){ pushUndo(); t.mute=!t.mute; renderAll(); applyLive(); scheduleSave(); }
+  else if(act==="solo"){
+    pushUndo(); t.solo=!t.solo; renderAll(); applyLive(); scheduleSave();
+    if(t.solo) toast("Solo: you'll hear only "+t.name+" — the beat and other takes go quiet. Tap Solo again to hear everything.");
   }
+  else if(act==="align"){ pushUndo(); alignTake(t); restartSoon(); }
   else if(act==="setdelay"){
     if(!t.nudge){ toast("Slide SYNC until this take sits right, then lock it in."); return; }
+    pushUndo();
     S.latency=clamp(Math.round(S.latency-t.nudge),-1500,1500);
     saveLatency();
     /* this take is already where it should be — fold the nudge into its start */
@@ -1708,14 +1764,20 @@ $("takeList").addEventListener("click",e=>{
   else if(act==="barback"||act==="barfwd"){
     const bs=barSeconds();
     if(!bs){ toast("Couldn't read this beat's tempo, so bar moves are off. Use SYNC instead.","bad"); return; }
+    pushUndo();
     t.offset=Math.max(0,t.offset+(act==="barfwd"?bs:-bs));
     renderAll(); scheduleSave(); restartSoon();
     toast(t.name+" moved "+(act==="barfwd"?"forward":"back")+" one bar — now starting at "+fmt(t.offset)+".");
   }
   else if(act==="del"){
+    pushUndo();
     S.takes=S.takes.filter(x=>x.id!==t.id);
-    renderAll(); scheduleSave();
+    renderAll(); scheduleSave(); restartSoon();
+    toast("Deleted "+t.name+". Undo brings it back.");
   }
+});
+$("takeList").addEventListener("change",e=>{
+  const inp=e.target.closest("[data-act]"); if(inp) delete inp.dataset.armed;
 });
 $("takeList").addEventListener("input",e=>{
   const inp=e.target.closest("[data-act]"); if(!inp) return;
@@ -1723,6 +1785,7 @@ $("takeList").addEventListener("input",e=>{
   const t=S.takes.find(x=>x.id==row.dataset.id); if(!t) return;
   const act=inp.dataset.act, v=inp.value;
   const vEl=inp.parentElement?inp.parentElement.querySelector(".v"):null;
+  if(act!=="name"&&!inp.dataset.armed){ pushUndo(); inp.dataset.armed="1"; }
   if(act==="gain"){ t.gain=parseFloat(v); if(vEl) vEl.textContent=Math.round(t.gain*100); applyLive(); }
   else if(act==="pan"){
     t.pan=parseFloat(v); applyLive();
@@ -1764,6 +1827,15 @@ $("recBtn").addEventListener("click",()=>{ S.recording?stopRec():startRec(); });
    while the finger moves and picking playback back up on release.
    Vertical swipes are left to the browser so the page still scrolls. */
 let scrubSt=null;
+/* Drag the red clip itself to slide a take along the timeline. Dragging
+   anywhere else on a lane scrubs. One undo step per drag. */
+function placeClip(row,t){
+  const clip=row&&row.querySelector(".clip"); if(!clip) return;
+  const d=duration(), raw=t.offset+t.nudge/1000, start=Math.max(0,raw);
+  const left=(start/d)*100;
+  clip.style.left=left.toFixed(3)+"%";
+  clip.style.width=Math.max(0.6,Math.min(100-left,((t.buffer.duration-(start-raw))/d)*100)).toFixed(3)+"%";
+}
 function scrubSeek(st,x){
   const r=st.el.getBoundingClientRect();
   S.playhead=clamp((x-r.left)/Math.max(1,r.width),0,1)*duration();
@@ -1773,15 +1845,27 @@ document.addEventListener("pointerdown",e=>{
   if(S.recording||(e.pointerType==="mouse"&&e.button!==0)) return;
   if(e.target.closest("button,input")) return;
   const el=e.target.closest("#scrub,#beatLane,[data-lane]"); if(!el) return;
-  scrubSt={el:el,id:e.pointerId,x0:e.clientX,drag:false,resume:S.playing};
+  const clip=e.target.closest(".clip"), row=el.closest(".take");
+  const t=clip&&row?S.takes.find(x=>x.id==row.dataset.id):null;
+  scrubSt={el:el,id:e.pointerId,x0:e.clientX,drag:false,resume:S.playing,
+           move:t?{t:t,row:row,clip:clip,off0:t.offset,d:duration()}:null};
 });
 document.addEventListener("pointermove",e=>{
   const st=scrubSt; if(!st||e.pointerId!==st.id) return;
   if(!st.drag){
     if(Math.abs(e.clientX-st.x0)<6) return;
     st.drag=true;
-    if(S.playing){ stopSources(); cancelAnimationFrame(raf); S.playing=false; setPlayIcon(); }
     try{ st.el.setPointerCapture(st.id); }catch(err){}
+    if(st.move){ pushUndo(); st.move.clip.classList.add("grab"); }
+    else if(S.playing){ stopSources(); cancelAnimationFrame(raf); S.playing=false; setPlayIcon(); }
+  }
+  if(st.move){
+    const m=st.move, w=Math.max(1,st.el.getBoundingClientRect().width);
+    const off=m.off0+((e.clientX-st.x0)/w)*m.d;
+    /* keep at least a sliver of the take on the timeline */
+    m.t.offset=clamp(off,0.05-m.t.buffer.duration-m.t.nudge/1000,m.d-0.05-m.t.nudge/1000);
+    placeClip(m.row,m.t);
+    return;
   }
   scrubSeek(st,e.clientX);
 });
@@ -1789,12 +1873,18 @@ document.addEventListener("pointerup",e=>{
   const st=scrubSt; if(!st||e.pointerId!==st.id) return;
   scrubSt=null;
   if(S.recording) return;
+  if(st.move&&st.drag){
+    renderAll(); scheduleSave(); restartSoon();
+    toast(st.move.t.name+" moved to "+fmt(Math.max(0,st.move.t.offset+st.move.t.nudge/1000))+". Undo puts it back.");
+    return;
+  }
   scrubSeek(st,e.clientX);
   if(st.resume) play(S.playhead);
 });
 document.addEventListener("pointercancel",e=>{
   const st=scrubSt; if(!st||e.pointerId!==st.id) return;
   scrubSt=null;
+  if(st.move&&st.drag){ renderAll(); scheduleSave(); restartSoon(); return; }
   if(st.drag&&st.resume&&!S.recording) play(S.playhead);
 });
 $("recheck").addEventListener("click",async()=>{
@@ -1809,6 +1899,7 @@ window.addEventListener("resize",()=>{
 });
 document.addEventListener("keydown",e=>{
   if(e.target&&/INPUT|TEXTAREA/.test(e.target.tagName)) return;
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){ e.preventDefault(); undo(); return; }
   if(e.code==="Space"){ e.preventDefault(); if(!S.recording){ S.playing?pause():play(S.playhead); } }
 });
 
