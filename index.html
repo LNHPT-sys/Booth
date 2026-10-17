@@ -211,7 +211,7 @@
     height:27px;border-radius:4px;border:1px solid var(--edge2);background:var(--panel2);color:var(--bone);
     font-family:var(--mono);font-size:11px;padding:0 6px;flex:none;width:58px;
   }
-  .fxst{font-family:var(--mono);font-size:9.5px;color:var(--ash2);letter-spacing:.04em;flex:1;text-align:right;align-self:center;}
+  .fxst{font-family:var(--mono);font-size:9.5px;color:var(--ash2);letter-spacing:.03em;flex:1;text-align:right;align-self:center;line-height:1.35;}
   .knob{display:flex;align-items:center;gap:9px;}
   .knob .k{
     font-family:var(--mono);font-size:9px;color:var(--ash2);letter-spacing:.1em;
@@ -722,7 +722,7 @@ function fxCore(){
     for(let i=0;i<m;i++){ let t=0; for(let k=0;k<D;k++) t+=mono[i*D+k]; xd[i]=t/D; }
     const H=Math.max(1,Math.round(sr*0.005)), nF=Math.floor(n/H);
     const W=Math.round(sd*0.03), tMin=Math.max(2,Math.floor(sd/700)), tMax=Math.min(Math.floor(sd/70),W);
-    const f0=new Float32Array(nF), vo=new Uint8Array(nF), rmsF=new Float32Array(nF);
+    const f0=new Float32Array(nF), vo=new Uint8Array(nF), rmsF=new Float32Array(nF), actF=new Uint8Array(nF);
     let maxR=0;
     const d=new Float32Array(tMax+2), cm=new Float32Array(tMax+2);
     for(let f=0;f<nF;f++){
@@ -732,6 +732,7 @@ function fxCore(){
     }
     for(let f=0;f<nF;f++){
       if(rmsF[f]<maxR*0.04) continue;
+      actF[f]=1;
       const c=Math.floor((f+0.5)*H/D), a=c-(W>>1);
       if(a<0||a+W+tMax>=m) continue;
       let run=0; cm[0]=1;
@@ -764,7 +765,7 @@ function fxCore(){
       if(g-f<4) for(let k=f;k<g;k++) vo[k]=0;
       f=g;
     }
-    return {f0:sm,vo:vo,H:H,nF:nF};
+    return {f0:sm,vo:vo,H:H,nF:nF,act:actF};
   }
   function nearestNote(midi,allowed,prev,hyst){
     let best=-1,bd=1e9;
@@ -798,6 +799,10 @@ function fxCore(){
       if(onset) cur=corr*P.start; else cur+=(corr-cur)*k;
       cs[f]=cur;
     }
+    /* what the tuner found: share of the take it heard a pitch in, and how far it moved it */
+    let act=0, voc=0, sumC=0, maxC=0;
+    for(let f=0;f<nF;f++){ if(tr.act[f]) act++; if(vo[f]){ voc++; const c=Math.abs(cs[f])*100; sumC+=c; if(c>maxC) maxC=c; } }
+    tuneVoice.last={voicedPct:act?100*voc/act:0, avgCents:voc?sumC/voc:0, maxCents:maxC, frames:voc};
     if(!any) return chans;
     /* pitch at an arbitrary sample time, from the frame track */
     const f0At=(t)=>{
@@ -878,8 +883,9 @@ function fxCore(){
   };
 
   function process(chans,sr,preset,amount,bpm,verbAmt,echoAmt,tune){
-    if(tune&&TUNE_MODES[tune.mode]) chans=tuneVoice(chans,sr,tune);
-    const P=PRESETS[preset]; if(!P) return {chans:chans,gain:0,avgGr:0};
+    let tstat=null;
+    if(tune&&TUNE_MODES[tune.mode]){ tuneVoice.last=null; chans=tuneVoice(chans,sr,tune); tstat=tuneVoice.last; }
+    const P=PRESETS[preset]; if(!P) return {chans:chans,gain:0,avgGr:0,tune:tstat};
     const a=Math.max(0,Math.min(1,amount)), n=chans[0].length, nc=chans.length;
     verbAmt=Math.max(0,Math.min(1,+verbAmt||0)); echoAmt=Math.max(0,Math.min(1,+echoAmt||0));
     if(P.dn*a>0.02) chans=denoise(chans,sr,P.dn*a);
@@ -1022,7 +1028,7 @@ function fxCore(){
     if(pk>0.98) g*=0.98/pk;
     for(let c=0;c<outC;c++){ const d=out[c]; for(let i=0;i<n;i++) d[i]*=g; }
     return {chans:out, noise:noise, loud:loud, gain:dB(g),
-      avgGr:stN?stGr/stN:0, avgGate:stN?stGate/stN:0, deessPct:stN?100*stDe/stN:0};
+      avgGr:stN?stGr/stN:0, avgGate:stN?stGate/stN:0, deessPct:stN?100*stDe/stN:0, tune:tstat};
   }
   /* Key of a beat: pitch-class profile of its tonal content, matched against
      the Krumhansl major/minor profiles. A suggestion, never forced. */
@@ -1071,12 +1077,32 @@ try{
     "self.onmessage=function(e){const d=e.data;try{"+
     "if(d.kind==='key'){self.postMessage({kind:'key',kid:d.kid,key:process.detectKey(d.chans,d.sr)});return;}"+
     "const r=process(d.chans,d.sr,d.preset,d.amount,d.bpm,d.verb,d.echo,d.tune);"+
-    "self.postMessage({id:d.id,seq:d.seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr},r.chans.map(function(c){return c.buffer;}));}"+
+    "self.postMessage({id:d.id,seq:d.seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr,tune:r.tune},r.chans.map(function(c){return c.buffer;}));}"+
     "catch(err){self.postMessage({kind:d.kind,kid:d.kid,id:d.id,seq:d.seq,error:String(err&&err.message||err)});}};";
   FX.worker=new Worker(URL.createObjectURL(new Blob([src],{type:"text/javascript"})));
   FX.worker.onmessage=e=>{ if(e.data.kind==="key") keyDone(e.data); else fxDone(e.data); };
-  FX.worker.onerror=()=>{ FX.worker=null; };
+  FX.worker.onerror=()=>{ fxWorkerFailed(); };
 }catch(e){ FX.worker=null; }
+/* If the worker dies, is refused, or goes quiet, nothing may hang on
+   "rendering…": every pending job is re-run on the page itself. */
+function fxWorkerFailed(){
+  FX.worker=null;
+  for(const seq of Array.from(FX.jobs.keys())) fxInline(seq);
+}
+function fxInline(seq){
+  const job=FX.jobs.get(seq); if(!job||job.ran) return;
+  job.ran=true; clearTimeout(job.wd);
+  const t=job.t, chans=[];
+  for(let c=0;c<t.buffer.numberOfChannels;c++) chans.push(Float32Array.from(t.buffer.getChannelData(c)));
+  setTimeout(()=>{
+    try{
+      if(!FX.inline) FX.inline=fxCore();
+      const r=FX.inline(chans,t.buffer.sampleRate,t.fx.preset,t.fx.amount,(S.beat&&S.beat.bpm)||0,t.fx.verb,t.fx.echo,
+        t.fx.tune.mode!=="off"?{mode:t.fx.tune.mode,root:t.fx.tune.root,scale:t.fx.tune.scale}:null);
+      fxDone({id:t.id,seq:seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr,tune:r.tune});
+    }catch(e){ fxDone({id:t.id,seq:seq,error:String(e&&e.message||e)}); }
+  },30);
+}
 const NOTE_NAMES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 const TUNE_LABEL={off:"Off",natural:"Natural",tight:"Tight",robot:"Robot"};
 const SCALE_LABEL={major:"Major",minor:"Minor",any:"Any note"};
@@ -1118,37 +1144,41 @@ function renderFx(t){
   if(key===t.fxKey&&t.fxBuf) return;
   if(key===t.fxPending) return;
   t.fxPending=key; t.fxBusy=true; fxStatus(t);
-  const seq=++FX.seq; FX.jobs.set(seq,{t:t,key:key});
+  const seq=++FX.seq; const job={t:t,key:key,ran:false,wd:0}; FX.jobs.set(seq,job);
+  job.wd=setTimeout(()=>{ if(FX.jobs.get(seq)===job&&!job.ran){ FX.worker=null; fxInline(seq); } },window.__fxTimeout||60000);
   const chans=[];
   for(let c=0;c<t.buffer.numberOfChannels;c++) chans.push(Float32Array.from(t.buffer.getChannelData(c)));
   const msg={id:t.id,seq:seq,chans:chans,sr:t.buffer.sampleRate,preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo,bpm:(S.beat&&S.beat.bpm)||0,
     tune:t.fx.tune.mode!=="off"?{mode:t.fx.tune.mode,root:t.fx.tune.root,scale:t.fx.tune.scale}:null};
   if(FX.worker){ try{ FX.worker.postMessage(msg,chans.map(c=>c.buffer)); return; }catch(e){ FX.worker=null; } }
-  setTimeout(()=>{
-    try{
-      if(!FX.inline) FX.inline=fxCore();
-      const r=FX.inline(msg.chans,msg.sr,msg.preset,msg.amount,msg.bpm,msg.verb,msg.echo,msg.tune);
-      fxDone({id:t.id,seq:seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr});
-    }catch(e){ fxDone({id:t.id,seq:seq,error:String(e&&e.message||e)}); }
-  },30);
+  fxInline(seq);
 }
 function fxDone(d){
   const job=FX.jobs.get(d.seq); if(!job) return;
-  FX.jobs.delete(d.seq);
+  FX.jobs.delete(d.seq); clearTimeout(job.wd);
   const t=job.t;
   if(t.fxPending!==job.key) return;        /* a newer setting replaced this one */
   t.fxPending=""; t.fxBusy=false;
   if(d.error||!d.chans){ fxStatus(t); toast("Couldn't render that sound: "+(d.error||"unknown"),"bad"); return; }
   const buf=AC().createBuffer(d.chans.length,d.chans[0].length,t.buffer.sampleRate);
   for(let c=0;c<d.chans.length;c++) buf.getChannelData(c).set(d.chans[c]);
-  t.fxBuf=buf; t.fxKey=job.key;
+  t.fxBuf=buf; t.fxKey=job.key; t.fxInfo=d.tune||null;
   fxStatus(t);
   if(S.playing) restartSoon();
 }
 function fxStatus(t){
   const row=document.querySelector('.take[data-id="'+t.id+'"]'); if(!row) return;
   const el=row.querySelector("[data-fxst]"); if(!el) return;
-  el.textContent = t.fxBusy ? "rendering…" : (fxActive(t) ? "ready" : "");
+  el.textContent = fxStatusText(t);
+}
+/* Says what autotune actually did, so a take that came out unchanged is never a mystery. */
+function fxStatusText(t){
+  if(t.fxBusy) return "rendering…";
+  if(!fxActive(t)) return "";
+  const i=t.fx.tune.mode!=="off"?t.fxInfo:null;
+  if(!i) return "ready";
+  if(i.frames<8||i.voicedPct<15) return "couldn't hear a clear pitch to tune";
+  return "ready · pitch found in "+Math.round(i.voicedPct)+"% · moved "+Math.round(i.avgCents)+"¢ on average";
 }
 function fxAllReady(){ return !S.takes.some(t=>t.fxBusy); }
 
@@ -1763,7 +1793,7 @@ function takeRow(t,i){
       (fxActive(t)
         ? '<div class="acts" style="margin-top:6px;">'+
             '<button class="btn sm ab'+(t.abLatch?" on":"")+'" data-act="ab" style="flex:0 0 auto;padding-inline:12px;">'+(t.abLatch?"Hearing raw — tap to switch back":"Tap or hold: hear raw")+'</button>'+
-            '<span class="fxst" data-fxst>'+(t.fxBusy?"rendering…":"ready")+'</span>'+
+            '<span class="fxst" data-fxst>'+fxStatusText(t)+'</span>'+
           '</div>'
         : '')+
     '</div>'+
