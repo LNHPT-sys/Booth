@@ -51,7 +51,11 @@
     overflow-x:hidden;
   }
   *{box-sizing:border-box;}
-  button{font-family:inherit;color:inherit;}
+  button{
+    font-family:inherit;color:inherit;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;
+  }
+  .btn.sm.ab{touch-action:none;}
   button:focus-visible,input:focus-visible,[tabindex]:focus-visible{
     outline:2px solid var(--brass);outline-offset:2px;
   }
@@ -688,14 +692,15 @@ function fxCore(){
 
   const PRESETS={
     clean:  {dn:1, hp:80,  mud:-2,  pres:2.5, air:2, gate:1, ratio:3, depth:6,  deess:1,   sat:0,   verb:0,    delay:0, lp:0,    trim:0,    stereo:false},
-    radio:  {dn:1, hp:120, mud:-3,  pres:4,   air:3, gate:1, ratio:4, depth:10, deess:1.2, sat:1,   verb:0.10, delay:0, lp:0,    trim:0,    stereo:true},
-    adlib:  {dn:0.8, hp:200, mud:-2,  pres:2,   air:3, gate:1, ratio:4, depth:8,  deess:1,   sat:0.4, verb:1,    delay:1, lp:0,    trim:-2.5, stereo:true},
+    radio:  {dn:1, hp:120, mud:-3,  pres:4,   air:3, gate:1, ratio:4, depth:10, deess:1.2, sat:1,   verb:0.10, delay:0, lp:0,    trim:0,    stereo:false},
+    adlib:  {dn:0.8, hp:200, mud:-2,  pres:2,   air:3, gate:1, ratio:4, depth:8,  deess:1,   sat:0.4, verb:1,    delay:1, lp:0,    trim:-2.5, stereo:false},
     doubles:{dn:1, hp:170, mud:-3,  pres:1,   air:0, gate:1, ratio:3, depth:7,  deess:1,   sat:0,   verb:0,    delay:0, lp:9000, trim:-3.5, stereo:false}
   };
 
-  function process(chans,sr,preset,amount,bpm){
+  function process(chans,sr,preset,amount,bpm,verbAmt,echoAmt){
     const P=PRESETS[preset]; if(!P) return {chans:chans};
     const a=Math.max(0,Math.min(1,amount)), n=chans[0].length, nc=chans.length;
+    verbAmt=Math.max(0,Math.min(1,+verbAmt||0)); echoAmt=Math.max(0,Math.min(1,+echoAmt||0));
     if(P.dn*a>0.02) chans=denoise(chans,sr,P.dn*a);
     const mono=new Float32Array(n);
     for(let c=0;c<nc;c++){ const d=chans[c]; for(let i=0;i<n;i++) mono[i]+=d[i]/nc; }
@@ -745,17 +750,17 @@ function fxCore(){
     const gateThr=gFloor+8, gateMax=20*a;
     const r=P.ratio, cThr=loudDet-(P.depth*a)/(1-1/r), knee=6;
     const satD=1+2.2*a*P.sat, satN=Math.tanh(satD);
-    const outC=P.stereo?2:nc;
+    const outC=(P.stereo||verbAmt>0||echoAmt>0)?2:nc;
     const out=[]; for(let c=0;c<outC;c++) out.push(new Float32Array(n));
 
-    const verb=(P.verb*a>0)?new Verb(sr,0.84,0.3):null, verbWet=0.32*P.verb*a;
+    const verb=(verbAmt>0)?new Verb(sr,0.84,0.3):null, verbWet=0.32*verbAmt;
     const preN=Math.round(sr*0.018), pre=new Float32Array(preN+1); let preI=0;
     let dl=null, dlWet=0;
-    if(P.delay*a>0){
+    if(echoAmt>0){
       const sec=bpm>0?Math.max(0.12,Math.min(0.75,30/bpm)):0.28;   /* an eighth note */
       const N=Math.round(sr*sec);
       dl={L:new Float32Array(N),R:new Float32Array(N),i:0,fb:0.34,lpL:new Biquad().set("lp",sr,3500,0.7,0),lpR:new Biquad().set("lp",sr,3500,0.7,0)};
-      dlWet=0.3*P.delay*a;
+      dlWet=0.3*echoAmt;
     }
 
     const y=new Float32Array(nc);
@@ -846,10 +851,12 @@ function fxCore(){
    their raw buffer; the processed one sits beside it and is rebuilt
    whenever the preset, amount or beat tempo changes. */
 const FX_LABEL={off:"Off",clean:"Clean",radio:"Radio",adlib:"Adlib",doubles:"Doubles"};
+/* Picking a Tone also sets its usual reverb and echo; both stay adjustable. */
+const SPACE_DEFAULT={off:[0,0],clean:[0,0],radio:[0.1,0],adlib:[0.6,0.6],doubles:[0,0]};
 const FX={seq:0,jobs:new Map(),worker:null,inline:null};
 try{
   const src="const process=("+fxCore.toString()+")();"+
-    "self.onmessage=function(e){const d=e.data;try{const r=process(d.chans,d.sr,d.preset,d.amount,d.bpm);"+
+    "self.onmessage=function(e){const d=e.data;try{const r=process(d.chans,d.sr,d.preset,d.amount,d.bpm,d.verb,d.echo);"+
     "self.postMessage({id:d.id,seq:d.seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr},r.chans.map(function(c){return c.buffer;}));}"+
     "catch(err){self.postMessage({id:d.id,seq:d.seq,error:String(err&&err.message||err)});}};";
   FX.worker=new Worker(URL.createObjectURL(new Blob([src],{type:"text/javascript"})));
@@ -858,7 +865,7 @@ try{
 }catch(e){ FX.worker=null; }
 function fxKeyOf(t){
   if(!t.fx||t.fx.preset==="off") return "";
-  return t.fx.preset+"|"+t.fx.amount.toFixed(2)+"|"+Math.round((S.beat&&S.beat.bpm)||0);
+  return t.fx.preset+"|"+t.fx.amount.toFixed(2)+"|"+t.fx.verb.toFixed(2)+"|"+t.fx.echo.toFixed(2)+"|"+Math.round((S.beat&&S.beat.bpm)||0);
 }
 function fxBufOf(t){ return (t.fx&&t.fx.preset!=="off"&&t.fxBuf)?t.fxBuf:t.buffer; }
 function renderFx(t){
@@ -870,12 +877,12 @@ function renderFx(t){
   const seq=++FX.seq; FX.jobs.set(seq,{t:t,key:key});
   const chans=[];
   for(let c=0;c<t.buffer.numberOfChannels;c++) chans.push(Float32Array.from(t.buffer.getChannelData(c)));
-  const msg={id:t.id,seq:seq,chans:chans,sr:t.buffer.sampleRate,preset:t.fx.preset,amount:t.fx.amount,bpm:(S.beat&&S.beat.bpm)||0};
+  const msg={id:t.id,seq:seq,chans:chans,sr:t.buffer.sampleRate,preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo,bpm:(S.beat&&S.beat.bpm)||0};
   if(FX.worker){ try{ FX.worker.postMessage(msg,chans.map(c=>c.buffer)); return; }catch(e){ FX.worker=null; } }
   setTimeout(()=>{
     try{
       if(!FX.inline) FX.inline=fxCore();
-      const r=FX.inline(msg.chans,msg.sr,msg.preset,msg.amount,msg.bpm);
+      const r=FX.inline(msg.chans,msg.sr,msg.preset,msg.amount,msg.bpm,msg.verb,msg.echo);
       fxDone({id:t.id,seq:seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr});
     }catch(e){ fxDone({id:t.id,seq:seq,error:String(e&&e.message||e)}); }
   },30);
@@ -1090,7 +1097,7 @@ async function saveProject(){
       takes:S.takes.map(t=>({
         name:t.name, blob:t.blob, mime:t.mime, offset:t.offset,
         nudge:t.nudge, gain:t.gain, pan:t.pan, mute:t.mute, solo:t.solo,
-        recorded:!!t.recorded, fx:t.fx?{preset:t.fx.preset,amount:t.fx.amount}:null
+        recorded:!!t.recorded, fx:t.fx?{preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo}:null
       }))
     });
     let e=SESS.list.find(x=>x.id===id);
@@ -1130,8 +1137,11 @@ async function loadProject(id){
             gain:typeof t.gain==="number"?t.gain:1, pan:t.pan||0,
             mute:!!t.mute, solo:!!t.solo,
             recorded:!!t.recorded,
-            fx:(t.fx&&FX_LABEL[t.fx.preset])?{preset:t.fx.preset,amount:typeof t.fx.amount==="number"?t.fx.amount:0.6}:{preset:"off",amount:0.6},
-            fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false
+            fx:(t.fx&&FX_LABEL[t.fx.preset])?{preset:t.fx.preset,amount:typeof t.fx.amount==="number"?t.fx.amount:0.6,
+                 verb:typeof t.fx.verb==="number"?t.fx.verb:SPACE_DEFAULT[t.fx.preset][0],
+                 echo:typeof t.fx.echo==="number"?t.fx.echo:SPACE_DEFAULT[t.fx.preset][1]}
+               :{preset:"off",amount:0.6,verb:0,echo:0},
+            fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false,abLatch:false
           });
           any=true;
         }catch(e){}
@@ -1456,15 +1466,21 @@ function takeRow(t,i){
         '<span class="v'+(t.nudge?" set":"")+'">'+(t.nudge>0?"+":"")+t.nudge+'ms</span></div>'+
     '</div>'+
     '<div class="sound">'+
-      '<div class="knob"><span class="k">Sound</span><div class="seg">'+
+      '<div class="knob"><span class="k">Tone</span><div class="seg">'+
         Object.keys(FX_LABEL).map(p=>'<button class="segb'+(t.fx.preset===p?" on":"")+'" data-act="fxpre" data-preset="'+p+'">'+FX_LABEL[p]+'</button>').join("")+
       '</div></div>'+
       (t.fx.preset!=="off"
         ? '<div class="knob"><span class="k">Amount</span>'+
             '<input type="range" min="0" max="1" step="0.05" value="'+t.fx.amount+'" data-act="fxamt">'+
             '<span class="v">'+Math.round(t.fx.amount*100)+'</span></div>'+
+          '<div class="knob"><span class="k">Reverb</span>'+
+            '<input type="range" min="0" max="1" step="0.05" value="'+t.fx.verb+'" data-act="fxverb">'+
+            '<span class="v">'+Math.round(t.fx.verb*100)+'</span></div>'+
+          '<div class="knob"><span class="k">Echo</span>'+
+            '<input type="range" min="0" max="1" step="0.05" value="'+t.fx.echo+'" data-act="fxecho">'+
+            '<span class="v">'+Math.round(t.fx.echo*100)+'</span></div>'+
           '<div class="acts" style="margin-top:6px;">'+
-            '<button class="btn sm ab" data-act="ab" style="flex:0 0 auto;padding-inline:12px;">Hold to hear raw</button>'+
+            '<button class="btn sm ab'+(t.abLatch?" on":"")+'" data-act="ab" style="flex:0 0 auto;padding-inline:12px;">'+(t.abLatch?"Hearing raw — tap to switch back":"Tap or hold: hear raw")+'</button>'+
             '<span class="fxst" data-fxst>'+(t.fxBusy?"rendering…":"ready")+'</span>'+
           '</div>'
         : '')+
@@ -1539,7 +1555,7 @@ let UNDO=[];
 function snap(){
   return {beat:S.beat, beatVol:S.beatVol, latency:S.latency,
     takes:S.takes.map(t=>({t:t,p:{offset:t.offset,nudge:t.nudge,gain:t.gain,pan:t.pan,
-      mute:t.mute,solo:t.solo,name:t.name,fx:{preset:t.fx.preset,amount:t.fx.amount}}}))};
+      mute:t.mute,solo:t.solo,name:t.name,fx:{preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo}}}))};
 }
 function pushUndo(){
   UNDO.push(snap());
@@ -1553,7 +1569,7 @@ function undo(){
   S.beat=u.beat;
   S.beatVol=u.beatVol;
   if(u.latency!==S.latency){ S.latency=u.latency; saveLatency(); renderCheck(); }
-  S.takes=u.takes.map(x=>Object.assign(x.t,x.p));
+  S.takes=u.takes.map(x=>Object.assign(x.t,x.p,{fx:Object.assign({},x.p.fx)}));
   renderAll(); renderUndo(); scheduleSave();
   S.takes.forEach(renderFx);
   if(S.playing) play(nowPos());
@@ -1641,6 +1657,7 @@ async function play(from){
     if(pan) pan.connect(g);
     g.connect(dest);
     /* raw and processed both run; A/B just crossfades between them */
+    t.abRaw=!!(t.abLatch||(abHeld&&abHeld.t===t));
     const srcs=[], fxb=(t.fx.preset!=="off"&&t.fxBuf)?t.fxBuf:null;
     const s=c.createBufferSource(); s.buffer=t.buffer; srcs.push(s);
     let gRaw=null,gFx=null;
@@ -1889,7 +1906,7 @@ function addTake(buffer,blob,mime,offset,name,recorded){
     id:++S.seq,name:name,buffer:buffer,blob:blob,mime:mime||"",
     offset:offset||0,nudge:0,gain:1,pan:0,mute:false,solo:false,
     recorded:!!recorded,
-    fx:{preset:"off",amount:0.6},fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false
+    fx:{preset:"off",amount:0.6,verb:0,echo:0},fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false,abLatch:false
   });
   renderAll(); scheduleSave();
 }
@@ -2102,7 +2119,8 @@ $("takeList").addEventListener("click",e=>{
   if(act==="fxpre"){
     const p=btn.dataset.preset;
     if(!FX_LABEL[p]||p===t.fx.preset) return;
-    pushUndo(); t.fx.preset=p; t.abRaw=false;
+    pushUndo(); t.fx.preset=p; t.abRaw=false; t.abLatch=false;
+    t.fx.verb=SPACE_DEFAULT[p][0]; t.fx.echo=SPACE_DEFAULT[p][1];
     renderAll(); renderFx(t); scheduleSave(); restartSoon();
     return;
   }
@@ -2162,25 +2180,32 @@ $("takeList").addEventListener("input",e=>{
     }
     restartSoon();
   }
-  else if(act==="fxamt"){
-    t.fx.amount=parseFloat(v);
-    if(vEl) vEl.textContent=Math.round(t.fx.amount*100);
+  else if(act==="fxamt"||act==="fxverb"||act==="fxecho"){
+    const key=act==="fxamt"?"amount":act==="fxverb"?"verb":"echo";
+    t.fx[key]=parseFloat(v);
+    if(vEl) vEl.textContent=Math.round(t.fx[key]*100);
   }
   else if(act==="name"){ t.name=inp.value.slice(0,30); }
   scheduleSave();
 });
-/* amount renders on release, not on every tick of the slider */
+/* sliders render on release, not on every tick */
 $("takeList").addEventListener("change",e=>{
-  const inp=e.target.closest('[data-act="fxamt"]'); if(!inp) return;
+  const inp=e.target.closest('[data-act="fxamt"],[data-act="fxverb"],[data-act="fxecho"]'); if(!inp) return;
   const row=e.target.closest(".take"); if(!row) return;
   const t=S.takes.find(x=>x.id==row.dataset.id); if(t) renderFx(t);
 });
-/* A/B: hold to hear the raw take, release to hear the sound again */
+/* A/B: hold to hear the raw take and release for the sound again — or tap
+   once to stay on raw, and tap again to come back. */
 let abHeld=null;
+function abLabel(t,btn){
+  btn.classList.toggle("on",t.abRaw);
+  btn.textContent=t.abLatch?"Hearing raw — tap to switch back":(t.abRaw?"Raw":"Tap or hold: hear raw");
+}
 function abEnd(){
   if(!abHeld) return;
-  const {t,btn}=abHeld; abHeld=null;
-  t.abRaw=false; btn.classList.remove("on"); btn.textContent="Hold to hear raw";
+  const {t,btn,t0}=abHeld; abHeld=null;
+  if(performance.now()-t0<320){ t.abLatch=true; abLabel(t,btn); return; }   /* a tap: stay on raw */
+  t.abRaw=false; t.abLatch=false; abLabel(t,btn);
   applyLive();
 }
 $("takeList").addEventListener("pointerdown",e=>{
@@ -2188,12 +2213,14 @@ $("takeList").addEventListener("pointerdown",e=>{
   const row=btn.closest(".take"); if(!row) return;
   const t=S.takes.find(x=>x.id==row.dataset.id); if(!t) return;
   e.preventDefault();
+  if(t.abLatch){ t.abLatch=false; t.abRaw=false; abLabel(t,btn); applyLive(); return; }
   abEnd();
-  abHeld={t:t,btn:btn};
-  t.abRaw=true; btn.classList.add("on"); btn.textContent="Raw";
+  abHeld={t:t,btn:btn,t0:performance.now()};
+  t.abRaw=true; abLabel(t,btn);
   try{ btn.setPointerCapture(e.pointerId); }catch(err){}
   if(!S.playing&&!S.recording) play(S.playhead); else applyLive();
 });
+$("takeList").addEventListener("contextmenu",e=>{ if(e.target.closest('[data-act="ab"]')) e.preventDefault(); });
 document.addEventListener("pointerup",abEnd);
 document.addEventListener("pointercancel",abEnd);
 

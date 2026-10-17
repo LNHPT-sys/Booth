@@ -40,12 +40,15 @@ fits it. Rules taken from real use:
 - Sound engine (per take, off by default, non-destructive): Clean, Radio,
   Adlib, Doubles presets with one Amount slider; hold-to-hear-raw A/B;
   level-matched so nothing gets louder by stealth; own compressor, gate,
-  EQ, de-esser, plate reverb and tempo-synced delay; renders in a worker
+  EQ, de-esser, spectral noise reduction; renders in a worker
+- Tone and Space split: pick a Tone, then dial Reverb and Echo (tempo-synced)
+  separately; Adlib is a shortcut that sets both
+- A/B raw button: tap to latch, or hold; no text selection on buttons
 
 ## Ideas, not started
 
-- Sound: tune the presets on real takes; reverb/delay as separate controls;
-  autotune (key picker + speed)
+- Sound: keep tuning the presets on real takes; autotune (key picker + speed);
+  reverb/echo on an untouched (Off) take
 - Trim the start and end of a take, split, cut out a section
 - Punch in: re-record one bar or line
 - Zoom the timeline; loop a section such as the hook
