@@ -36,11 +36,16 @@ fits it. Rules taken from real use:
   always work
 - Live recording strip in the bottom bar: your vocal draws over the beat as
   you record, with a mic meter that says good, quiet or too loud
-- Raw audio only: the vocal processing was removed after it made takes sound
-  worse; recording asks for 256kbps
+- Raw audio only by default; recording asks for 256kbps
+- Sound engine (per take, off by default, non-destructive): Clean, Radio,
+  Adlib, Doubles presets with one Amount slider; hold-to-hear-raw A/B;
+  level-matched so nothing gets louder by stealth; own compressor, gate,
+  EQ, de-esser, plate reverb and tempo-synced delay; renders in a worker
 
 ## Ideas, not started
 
+- Sound: tune the presets on real takes; reverb/delay as separate controls;
+  autotune (key picker + speed)
 - Trim the start and end of a take, split, cut out a section
 - Punch in: re-record one bar or line
 - Zoom the timeline; loop a section such as the hook

@@ -193,6 +193,17 @@
   .btn.sm{flex:1;font-size:9.5px;padding:8px 5px;letter-spacing:.09em;}
   .btn.sm.done{border-color:var(--go);color:var(--go);}
   .knobs{display:flex;flex-direction:column;gap:5px;margin-top:10px;}
+  .sound{margin-top:10px;padding-top:9px;border-top:1px solid var(--edge);display:flex;flex-direction:column;gap:5px;}
+  .seg{display:flex;flex:1;min-width:0;gap:4px;}
+  .segb{
+    flex:1;min-width:0;height:27px;border-radius:4px;border:1px solid var(--edge2);background:transparent;
+    color:var(--ash);font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;
+    cursor:pointer;padding:0 2px;
+  }
+  .segb:hover{color:var(--bone);border-color:var(--ash2);}
+  .segb.on{background:var(--brass);border-color:var(--brass);color:#17140F;font-weight:700;}
+  .btn.sm.ab.on{background:var(--bone);border-color:var(--bone);color:var(--ground);}
+  .fxst{font-family:var(--mono);font-size:9.5px;color:var(--ash2);letter-spacing:.04em;flex:1;text-align:right;align-self:center;}
   .knob{display:flex;align-items:center;gap:9px;}
   .knob .k{
     font-family:var(--mono);font-size:9px;color:var(--ash2);letter-spacing:.1em;
@@ -536,6 +547,283 @@ function clipGuard(buf){
   }
 }
 
+/* ============================ sound engine ============================ */
+/* Self-contained so it can run in a Web Worker: no outside references.
+   Takes raw channels and returns processed channels at the same loudness
+   as the input, so A/B is a fair fight and nothing gets louder by stealth.
+   Every stage is written here rather than using the browser's built-in
+   compressor, whose hidden makeup gain is what went wrong last time. */
+function fxCore(){
+  function Biquad(){ this.b0=1;this.b1=0;this.b2=0;this.a1=0;this.a2=0;this.z1=0;this.z2=0; }
+  Biquad.prototype.set=function(type,sr,f,Q,dB){
+    const A=Math.pow(10,(dB||0)/40), w=2*Math.PI*Math.min(f,sr*0.45)/sr, cs=Math.cos(w), sn=Math.sin(w);
+    const al=sn/(2*Q); let b0,b1,b2,a0,a1,a2;
+    if(type==="hp"){ b0=(1+cs)/2; b1=-(1+cs); b2=(1+cs)/2; a0=1+al; a1=-2*cs; a2=1-al; }
+    else if(type==="lp"){ b0=(1-cs)/2; b1=1-cs; b2=(1-cs)/2; a0=1+al; a1=-2*cs; a2=1-al; }
+    else if(type==="bp"){ b0=al; b1=0; b2=-al; a0=1+al; a1=-2*cs; a2=1-al; }
+    else if(type==="peak"){ b0=1+al*A; b1=-2*cs; b2=1-al*A; a0=1+al/A; a1=-2*cs; a2=1-al/A; }
+    else if(type==="ls"){ const s=Math.sqrt(A);
+      b0=A*((A+1)-(A-1)*cs+2*s*al); b1=2*A*((A-1)-(A+1)*cs); b2=A*((A+1)-(A-1)*cs-2*s*al);
+      a0=(A+1)+(A-1)*cs+2*s*al; a1=-2*((A-1)+(A+1)*cs); a2=(A+1)+(A-1)*cs-2*s*al; }
+    else { const s=Math.sqrt(A);
+      b0=A*((A+1)+(A-1)*cs+2*s*al); b1=-2*A*((A-1)+(A+1)*cs); b2=A*((A+1)+(A-1)*cs-2*s*al);
+      a0=(A+1)-(A-1)*cs+2*s*al; a1=2*((A-1)-(A+1)*cs); a2=(A+1)-(A-1)*cs-2*s*al; }
+    this.b0=b0/a0; this.b1=b1/a0; this.b2=b2/a0; this.a1=a1/a0; this.a2=a2/a0; return this;
+  };
+  Biquad.prototype.run=function(x){
+    const y=this.b0*x+this.z1;
+    this.z1=this.b1*x-this.a1*y+this.z2;
+    this.z2=this.b2*x-this.a2*y;
+    return y;
+  };
+  function Env(sr,attMs,relMs){
+    this.a=Math.exp(-1/(sr*attMs/1000)); this.r=Math.exp(-1/(sr*relMs/1000)); this.v=0;
+  }
+  Env.prototype.run=function(x){ const c=x>this.v?this.a:this.r; this.v=c*this.v+(1-c)*x; return this.v; };
+  const dB=v=>20*Math.log10(v+1e-9), lin=d=>Math.pow(10,d/20);
+  function pct(arr,p){ if(!arr.length) return -90; const a=Float32Array.from(arr).sort(); return a[Math.min(a.length-1,Math.floor(p*a.length))]; }
+
+  /* Freeverb-style plate: eight combs and four allpasses per side. */
+  function Verb(sr,room,damp){
+    const k=sr/44100, CT=[1116,1188,1277,1356,1422,1491,1557,1617], AT=[556,441,341,225];
+    const mk=(n)=>({b:new Float32Array(Math.max(2,Math.round(n*k))),i:0,f:0});
+    this.cl=CT.map(n=>mk(n)); this.cr=CT.map(n=>mk(n+23));
+    this.al=AT.map(n=>mk(n)); this.ar=AT.map(n=>mk(n+23));
+    this.room=room; this.damp=damp;
+  }
+  Verb.prototype.side=function(x,combs,aps){
+    let out=0;
+    for(const c of combs){
+      const y=c.b[c.i];
+      c.f=y*(1-this.damp)+c.f*this.damp;
+      c.b[c.i]=x+c.f*this.room;
+      if(++c.i>=c.b.length) c.i=0;
+      out+=y;
+    }
+    for(const a of aps){
+      const y=a.b[a.i];
+      const v=out+y*0.5;
+      a.b[a.i]=v;
+      if(++a.i>=a.b.length) a.i=0;
+      out=y-v*0.5;
+    }
+    return out*0.09;
+  };
+  Verb.prototype.run=function(x){ return [this.side(x,this.cl,this.al),this.side(x,this.cr,this.ar)]; };
+
+  const PRESETS={
+    clean:  {hp:80,  mud:-2,  pres:2.5, air:2, gate:1, ratio:3, depth:6,  deess:1,   sat:0,   verb:0,    delay:0, lp:0,    trim:0,    stereo:false},
+    radio:  {hp:120, mud:-3,  pres:4,   air:3, gate:1, ratio:4, depth:10, deess:1.2, sat:1,   verb:0.10, delay:0, lp:0,    trim:0,    stereo:true},
+    adlib:  {hp:200, mud:-2,  pres:2,   air:3, gate:1, ratio:4, depth:8,  deess:1,   sat:0.4, verb:1,    delay:1, lp:0,    trim:-2.5, stereo:true},
+    doubles:{hp:170, mud:-3,  pres:1,   air:0, gate:1, ratio:3, depth:7,  deess:1,   sat:0,   verb:0,    delay:0, lp:9000, trim:-3.5, stereo:false}
+  };
+
+  function process(chans,sr,preset,amount,bpm){
+    const P=PRESETS[preset]; if(!P) return {chans:chans};
+    const a=Math.max(0,Math.min(1,amount)), n=chans[0].length, nc=chans.length;
+    const mono=new Float32Array(n);
+    for(let c=0;c<nc;c++){ const d=chans[c]; for(let i=0;i<n;i++) mono[i]+=d[i]/nc; }
+
+    /* ---- analysis: where the voice is, how loud it is, how loud the noise is ---- */
+    const F=Math.max(1,Math.floor(sr*0.02)), nf=Math.floor(n/F);
+    const fr=new Float32Array(nf), sib=new Float32Array(nf);
+    const sc0=new Biquad().set("bp",sr,6500,1.3,0);
+    for(let f=0;f<nf;f++){
+      let e=0,es=0; const o=f*F;
+      for(let i=0;i<F;i++){ const v=mono[o+i]; e+=v*v; const b=sc0.run(v); es+=b*b; }
+      fr[f]=dB(Math.sqrt(e/F)); sib[f]=dB(Math.sqrt(es/F));
+    }
+    const live=[]; for(let f=0;f<nf;f++) if(fr[f]>-80) live.push(fr[f]);
+    const noise=pct(live,0.10), loud=pct(live,0.85);
+    /* the gate judges with its own detector, so measure the floor with it */
+    const gEnv0=new Env(sr,1,70), gdet=[];
+    for(let i=0;i<n;i++){ const ge=gEnv0.run(Math.abs(mono[i])); if((i&15)===0) gdet.push(dB(ge)); }
+    const gFloor=pct(gdet.filter(v=>v>-80),0.25);
+    const voicedThr=Math.min(loud-6,noise+10);
+    /* loudness and sibilance as the compressor and de-esser will see them:
+       same detectors, same timing, read every 16 samples on voiced audio */
+    const cEnv0=new Env(sr,4,120), dEnv0=new Env(sr,0.5,45), sc1=new Biquad().set("bp",sr,6500,1.3,0);
+    const cdet=[], sdet=[];
+    for(let i=0;i<n;i++){
+      const v=mono[i], ce=cEnv0.run(Math.abs(v)), se=dEnv0.run(Math.abs(sc1.run(v)));
+      if((i&15)===0&&fr[Math.min(nf-1,Math.floor(i/F))]>voicedThr){ cdet.push(dB(ce)); sdet.push(dB(se)); }
+    }
+    const loudDet=pct(cdet,0.85);
+    /* an S has to stand out from the voice, not just from other S's */
+    const sibThr=Math.max(pct(sdet,0.92),loudDet-12);
+
+    /* ---- per-channel filters ---- */
+    const ch=[];
+    for(let c=0;c<nc;c++){
+      ch.push({
+        hp:new Biquad().set("hp",sr,P.hp,0.71,0),
+        mud:new Biquad().set("ls",sr,250,0.7,P.mud*a),
+        pres:new Biquad().set("peak",sr,3200,0.9,P.pres*a),
+        air:new Biquad().set("hs",sr,10000,0.7,P.air*a),
+        lp:P.lp?new Biquad().set("lp",sr,P.lp,0.71,0):null,
+        band:new Biquad().set("bp",sr,6500,1.3,0)
+      });
+    }
+    const gateEnv=new Env(sr,1,70), compEnv=new Env(sr,4,120), deEnv=new Env(sr,0.5,45);
+    const sc=new Biquad().set("bp",sr,6500,1.3,0);
+    const gateThr=gFloor+8, gateMax=20*a;
+    const r=P.ratio, cThr=loudDet-(P.depth*a)/(1-1/r), knee=6;
+    const satD=1+2.2*a*P.sat, satN=Math.tanh(satD);
+    const outC=P.stereo?2:nc;
+    const out=[]; for(let c=0;c<outC;c++) out.push(new Float32Array(n));
+
+    const verb=(P.verb*a>0)?new Verb(sr,0.84,0.3):null, verbWet=0.32*P.verb*a;
+    const preN=Math.round(sr*0.018), pre=new Float32Array(preN+1); let preI=0;
+    let dl=null, dlWet=0;
+    if(P.delay*a>0){
+      const sec=bpm>0?Math.max(0.12,Math.min(0.75,30/bpm)):0.28;   /* an eighth note */
+      const N=Math.round(sr*sec);
+      dl={L:new Float32Array(N),R:new Float32Array(N),i:0,fb:0.34,lpL:new Biquad().set("lp",sr,3500,0.7,0),lpR:new Biquad().set("lp",sr,3500,0.7,0)};
+      dlWet=0.3*P.delay*a;
+    }
+
+    const y=new Float32Array(nc);
+    let gGate=1, gC=1, dcut=0, stGr=0, stGate=0, stDe=0, stN=0;
+    for(let i=0;i<n;i++){
+      /* detectors run every sample; the gain maths every 16th (0.3ms) */
+      const ge=gateEnv.run(Math.abs(mono[i]));
+      if((i&15)===0){
+        /* gate on the raw signal: breaths and room between lines come down, 2:1 */
+        const gd=dB(ge);
+        gGate=1;
+        if(gd<gateThr){ const red=Math.min(gateMax,3*(gateThr-gd)); gGate=lin(-red); }
+      }
+      let m=0;
+      for(let c=0;c<nc;c++){
+        const q=ch[c]; let v=chans[c][i]*gGate;
+        v=q.hp.run(v); v=q.mud.run(v); v=q.pres.run(v); v=q.air.run(v);
+        if(q.lp) v=q.lp.run(v);
+        y[c]=v; m+=v/nc;
+      }
+      const ce=compEnv.run(Math.abs(m)), se=deEnv.run(Math.abs(sc.run(m)));
+      if((i&15)===0){
+        /* compressor, detection linked across channels, soft knee */
+        const cd=dB(ce), over=cd-cThr; let gr=0;
+        if(over>knee/2) gr=over*(1-1/r);
+        else if(over>-knee/2) gr=(1-1/r)*Math.pow(over+knee/2,2)/(2*knee);
+        gC=lin(-gr*a);
+        if(fr[Math.min(nf-1,Math.floor(i/F))]>voicedThr){ stN++; stGr+=gr*a; stGate+=-dB(gGate); }
+        /* de-esser: when the 5-9k band spikes, pull that band down */
+        const sd=dB(se);
+        dcut=sd>sibThr?1-lin(-Math.min(10,(sd-sibThr)*0.8*P.deess*a)):0;
+        if(dcut>0) stDe++;
+      }
+      let mm=0;
+      for(let c=0;c<nc;c++){
+        let v=y[c]*gC;
+        const b=ch[c].band.run(v);
+        if(dcut>0) v-=dcut*b;
+        if(P.sat>0) v=Math.tanh(v*satD)/satN;
+        y[c]=v; mm+=v/nc;
+      }
+      /* effects go on the mono sum, dry stays per channel */
+      let wL=0,wR=0;
+      if(verb){
+        pre[preI]=mm; const pd=pre[(preI+1)%(preN+1)]; preI=(preI+1)%(preN+1);
+        const v=verb.run(pd); wL+=v[0]*verbWet; wR+=v[1]*verbWet;
+      }
+      if(dl){
+        const rl=dl.L[dl.i], rr=dl.R[dl.i];
+        dl.L[dl.i]=mm+dl.lpL.run(rr)*dl.fb;
+        dl.R[dl.i]=dl.lpR.run(rl)*dl.fb;
+        if(++dl.i>=dl.L.length) dl.i=0;
+        wL+=rl*dlWet; wR+=rr*dlWet;
+      }
+      if(outC===2){
+        const dL=nc===2?y[0]:y[0], dR=nc===2?y[1]:y[0];
+        out[0][i]=dL+wL; out[1][i]=dR+wR;
+      } else {
+        for(let c=0;c<nc;c++) out[c][i]=y[c];
+      }
+    }
+
+    /* ---- level match over the voiced frames, then a peak guard ---- */
+    let eIn=0,eOut=0,cnt=0;
+    for(let f=0;f<nf;f++){
+      if(fr[f]<=voicedThr) continue;
+      const o=f*F;
+      for(let i=0;i<F;i++){
+        const v=mono[o+i]; eIn+=v*v;
+        let w=0; for(let c=0;c<outC;c++) w+=out[c][o+i]/outC; eOut+=w*w;
+      }
+      cnt++;
+    }
+    let g=(cnt&&eOut>0)?Math.sqrt(eIn/eOut):1;
+    g*=lin(P.trim);
+    let pk=0;
+    for(let c=0;c<outC;c++){ const d=out[c]; for(let i=0;i<n;i++){ const v=Math.abs(d[i])*g; if(v>pk) pk=v; } }
+    if(pk>0.98) g*=0.98/pk;
+    for(let c=0;c<outC;c++){ const d=out[c]; for(let i=0;i<n;i++) d[i]*=g; }
+    return {chans:out, noise:noise, loud:loud, gain:dB(g),
+      avgGr:stN?stGr/stN:0, avgGate:stN?stGate/stN:0, deessPct:stN?100*stDe/stN:0};
+  }
+  return process;
+}
+
+/* The engine runs in a Web Worker so a long take never freezes the page;
+   if a browser refuses the worker it runs inline instead. Takes keep
+   their raw buffer; the processed one sits beside it and is rebuilt
+   whenever the preset, amount or beat tempo changes. */
+const FX_LABEL={off:"Off",clean:"Clean",radio:"Radio",adlib:"Adlib",doubles:"Doubles"};
+const FX={seq:0,jobs:new Map(),worker:null,inline:null};
+try{
+  const src="const process=("+fxCore.toString()+")();"+
+    "self.onmessage=function(e){const d=e.data;try{const r=process(d.chans,d.sr,d.preset,d.amount,d.bpm);"+
+    "self.postMessage({id:d.id,seq:d.seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr},r.chans.map(function(c){return c.buffer;}));}"+
+    "catch(err){self.postMessage({id:d.id,seq:d.seq,error:String(err&&err.message||err)});}};";
+  FX.worker=new Worker(URL.createObjectURL(new Blob([src],{type:"text/javascript"})));
+  FX.worker.onmessage=e=>fxDone(e.data);
+  FX.worker.onerror=()=>{ FX.worker=null; };
+}catch(e){ FX.worker=null; }
+function fxKeyOf(t){
+  if(!t.fx||t.fx.preset==="off") return "";
+  return t.fx.preset+"|"+t.fx.amount.toFixed(2)+"|"+Math.round((S.beat&&S.beat.bpm)||0);
+}
+function fxBufOf(t){ return (t.fx&&t.fx.preset!=="off"&&t.fxBuf)?t.fxBuf:t.buffer; }
+function renderFx(t){
+  const key=fxKeyOf(t);
+  if(!key){ t.fxBuf=null; t.fxKey=""; t.fxPending=""; t.fxBusy=false; fxStatus(t); return; }
+  if(key===t.fxKey&&t.fxBuf) return;
+  if(key===t.fxPending) return;
+  t.fxPending=key; t.fxBusy=true; fxStatus(t);
+  const seq=++FX.seq; FX.jobs.set(seq,{t:t,key:key});
+  const chans=[];
+  for(let c=0;c<t.buffer.numberOfChannels;c++) chans.push(Float32Array.from(t.buffer.getChannelData(c)));
+  const msg={id:t.id,seq:seq,chans:chans,sr:t.buffer.sampleRate,preset:t.fx.preset,amount:t.fx.amount,bpm:(S.beat&&S.beat.bpm)||0};
+  if(FX.worker){ try{ FX.worker.postMessage(msg,chans.map(c=>c.buffer)); return; }catch(e){ FX.worker=null; } }
+  setTimeout(()=>{
+    try{
+      if(!FX.inline) FX.inline=fxCore();
+      const r=FX.inline(msg.chans,msg.sr,msg.preset,msg.amount,msg.bpm);
+      fxDone({id:t.id,seq:seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr});
+    }catch(e){ fxDone({id:t.id,seq:seq,error:String(e&&e.message||e)}); }
+  },30);
+}
+function fxDone(d){
+  const job=FX.jobs.get(d.seq); if(!job) return;
+  FX.jobs.delete(d.seq);
+  const t=job.t;
+  if(t.fxPending!==job.key) return;        /* a newer setting replaced this one */
+  t.fxPending=""; t.fxBusy=false;
+  if(d.error||!d.chans){ fxStatus(t); toast("Couldn't render that sound: "+(d.error||"unknown"),"bad"); return; }
+  const buf=AC().createBuffer(d.chans.length,d.chans[0].length,t.buffer.sampleRate);
+  for(let c=0;c<d.chans.length;c++) buf.getChannelData(c).set(d.chans[c]);
+  t.fxBuf=buf; t.fxKey=job.key;
+  fxStatus(t);
+  if(S.playing) restartSoon();
+}
+function fxStatus(t){
+  const row=document.querySelector('.take[data-id="'+t.id+'"]'); if(!row) return;
+  const el=row.querySelector("[data-fxst]"); if(!el) return;
+  el.textContent = t.fxBusy ? "rendering…" : (t.fx.preset==="off" ? "" : "ready");
+}
+function fxAllReady(){ return !S.takes.some(t=>t.fxBusy); }
+
 /* ============================ WAV + ZIP ============================ */
 function encodeWAV(buf){
   const nc=Math.min(2,buf.numberOfChannels), sr=buf.sampleRate, len=buf.length;
@@ -726,7 +1014,7 @@ async function saveProject(){
       takes:S.takes.map(t=>({
         name:t.name, blob:t.blob, mime:t.mime, offset:t.offset,
         nudge:t.nudge, gain:t.gain, pan:t.pan, mute:t.mute, solo:t.solo,
-        recorded:!!t.recorded
+        recorded:!!t.recorded, fx:t.fx?{preset:t.fx.preset,amount:t.fx.amount}:null
       }))
     });
     let e=SESS.list.find(x=>x.id===id);
@@ -765,13 +1053,16 @@ async function loadProject(id){
             mime:t.mime||"", offset:t.offset||0, nudge:t.nudge||0,
             gain:typeof t.gain==="number"?t.gain:1, pan:t.pan||0,
             mute:!!t.mute, solo:!!t.solo,
-            recorded:!!t.recorded
+            recorded:!!t.recorded,
+            fx:(t.fx&&FX_LABEL[t.fx.preset])?{preset:t.fx.preset,amount:typeof t.fx.amount==="number"?t.fx.amount:0.6}:{preset:"off",amount:0.6},
+            fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false
           });
           any=true;
         }catch(e){}
       }
     }
   }catch(e){}
+  S.takes.forEach(renderFx);
   return any;
 }
 
@@ -1088,6 +1379,20 @@ function takeRow(t,i){
         '<input type="range" min="-600" max="600" step="5" value="'+t.nudge+'" data-act="nudge">'+
         '<span class="v'+(t.nudge?" set":"")+'">'+(t.nudge>0?"+":"")+t.nudge+'ms</span></div>'+
     '</div>'+
+    '<div class="sound">'+
+      '<div class="knob"><span class="k">Sound</span><div class="seg">'+
+        Object.keys(FX_LABEL).map(p=>'<button class="segb'+(t.fx.preset===p?" on":"")+'" data-act="fxpre" data-preset="'+p+'">'+FX_LABEL[p]+'</button>').join("")+
+      '</div></div>'+
+      (t.fx.preset!=="off"
+        ? '<div class="knob"><span class="k">Amount</span>'+
+            '<input type="range" min="0" max="1" step="0.05" value="'+t.fx.amount+'" data-act="fxamt">'+
+            '<span class="v">'+Math.round(t.fx.amount*100)+'</span></div>'+
+          '<div class="acts" style="margin-top:6px;">'+
+            '<button class="btn sm ab" data-act="ab" style="flex:0 0 auto;padding-inline:12px;">Hold to hear raw</button>'+
+            '<span class="fxst" data-fxst>'+(t.fxBusy?"rendering…":"ready")+'</span>'+
+          '</div>'
+        : '')+
+    '</div>'+
     '<div class="acts">'+
       '<button class="btn sm" data-act="barback" title="Back one bar">&#9664; Bar</button>'+
       '<button class="btn sm" data-act="barfwd" title="Forward one bar">Bar &#9654;</button>'+
@@ -1158,7 +1463,7 @@ let UNDO=[];
 function snap(){
   return {beat:S.beat, beatVol:S.beatVol, latency:S.latency,
     takes:S.takes.map(t=>({t:t,p:{offset:t.offset,nudge:t.nudge,gain:t.gain,pan:t.pan,
-      mute:t.mute,solo:t.solo,name:t.name}}))};
+      mute:t.mute,solo:t.solo,name:t.name,fx:{preset:t.fx.preset,amount:t.fx.amount}}}))};
 }
 function pushUndo(){
   UNDO.push(snap());
@@ -1174,6 +1479,7 @@ function undo(){
   if(u.latency!==S.latency){ S.latency=u.latency; saveLatency(); renderCheck(); }
   S.takes=u.takes.map(x=>Object.assign(x.t,x.p));
   renderAll(); renderUndo(); scheduleSave();
+  S.takes.forEach(renderFx);
   if(S.playing) play(nowPos());
   toast("Undone.");
 }
@@ -1205,6 +1511,7 @@ function applyLive(){
     const n=liveN.takes.get(t.id); if(!n) continue;
     liveSet(n.gain.gain,audible(t)?t.gain:0);
     if(n.pan) liveSet(n.pan.pan,clamp(t.pan,-1,1));
+    if(n.gRaw){ liveSet(n.gRaw.gain,t.abRaw?1:0); liveSet(n.gFx.gain,t.abRaw?0:1); }
   }
 }
 function nowPos(){
@@ -1250,24 +1557,33 @@ async function play(from){
     liveN.beat=g;
   }
   for(const t of S.takes){
-    /* muted takes still get wired, at zero, so M and S work mid-play */
-    const s=c.createBufferSource(); s.buffer=t.buffer;
+    /* muted takes still get wired, at zero, so Mute and Solo work mid-play */
     const g=c.createGain(); g.gain.value=audible(t)?t.gain:0;
-    let node=s;
     let pan=null;
     if(c.createStereoPanner){ pan=c.createStereoPanner(); pan.pan.value=clamp(t.pan,-1,1); }
-    if(pan){ node.connect(pan); pan.connect(g); } else { node.connect(g); }
+    const head=pan||g;
+    if(pan) pan.connect(g);
     g.connect(dest);
-    liveN.takes.set(t.id,{gain:g,pan:pan});
+    /* raw and processed both run; A/B just crossfades between them */
+    const srcs=[], fxb=(t.fx.preset!=="off"&&t.fxBuf)?t.fxBuf:null;
+    const s=c.createBufferSource(); s.buffer=t.buffer; srcs.push(s);
+    let gRaw=null,gFx=null;
+    if(fxb){
+      gRaw=c.createGain(); gFx=c.createGain();
+      gRaw.gain.value=t.abRaw?1:0; gFx.gain.value=t.abRaw?0:1;
+      s.connect(gRaw); gRaw.connect(head);
+      const s2=c.createBufferSource(); s2.buffer=fxb; s2.connect(gFx); gFx.connect(head); srcs.push(s2);
+    } else s.connect(head);
+    liveN.takes.set(t.id,{gain:g,pan:pan,gRaw:gRaw,gFx:gFx});
     const clip=t.offset+t.nudge/1000;
     const when=at+(clip-from);
-    if(when>=at){ s.start(when,0); }
+    if(when>=at){ for(const x of srcs) x.start(when,0); }
     else{
       const into=from-clip;
       if(into>=t.buffer.duration) continue;
-      s.start(at,into);
+      for(const x of srcs) x.start(at,into);
     }
-    live.push(s);
+    for(const x of srcs) live.push(x);
   }
   S.playing=true; setPlayIcon();
   cancelAnimationFrame(raf); raf=requestAnimationFrame(tick);
@@ -1496,7 +1812,8 @@ function addTake(buffer,blob,mime,offset,name,recorded){
   S.takes.push({
     id:++S.seq,name:name,buffer:buffer,blob:blob,mime:mime||"",
     offset:offset||0,nudge:0,gain:1,pan:0,mute:false,solo:false,
-    recorded:!!recorded
+    recorded:!!recorded,
+    fx:{preset:"off",amount:0.6},fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false
   });
   renderAll(); scheduleSave();
 }
@@ -1521,7 +1838,7 @@ async function renderMixBuffer(withTakesOnly){
   }
   for(const t of S.takes){
     if(t.mute) continue;          /* solo is for listening; the export is the whole song */
-    const s=off.createBufferSource(); s.buffer=t.buffer;
+    const s=off.createBufferSource(); s.buffer=fxBufOf(t);
     const g=off.createGain(); g.gain.value=t.gain;
     let node=s;
     let pan=null;
@@ -1537,7 +1854,7 @@ async function renderStem(t){
   const c=AC(), sr=c.sampleRate, total=duration();
   const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
   const off=new OAC(2,Math.max(1,Math.ceil(total*sr)),sr);
-  const s=off.createBufferSource(); s.buffer=t.buffer;
+  const s=off.createBufferSource(); s.buffer=fxBufOf(t);
   const g=off.createGain(); g.gain.value=t.gain;
   let node=s;
   let pan=null;
@@ -1553,6 +1870,7 @@ function safeName(s){
 }
 
 async function doExport(){
+  if(!fxAllReady()){ toast("Still rendering a take's sound — try again in a moment."); return; }
   const btn=$("exportBtn"), old=btn.textContent;
   btn.disabled=true; btn.textContent="Rendering…";
   try{
@@ -1624,6 +1942,7 @@ async function loadBeatFile(file){
     const buf=await decode(await file.arrayBuffer());
     pushUndo();
     S.beat={name:file.name,buffer:buf,blob:blob,bpm:detectBPM(envelope(buf))};
+    S.takes.forEach(renderFx);
     S.playhead=0; stopAll(); renderAll(); scheduleSave();
     toast("Beat loaded — "+fmt(buf.duration).slice(0,5)+".","good");
   }catch(e){
@@ -1703,6 +2022,14 @@ $("takeList").addEventListener("click",e=>{
 
   if(!btn||btn.tagName==="INPUT") return;
   const act=btn.dataset.act;
+  if(act==="ab") return;                      /* handled on pointer events */
+  if(act==="fxpre"){
+    const p=btn.dataset.preset;
+    if(!FX_LABEL[p]||p===t.fx.preset) return;
+    pushUndo(); t.fx.preset=p; t.abRaw=false;
+    renderAll(); renderFx(t); scheduleSave(); restartSoon();
+    return;
+  }
   if(act==="mute"){ pushUndo(); t.mute=!t.mute; renderAll(); applyLive(); scheduleSave(); }
   else if(act==="solo"){
     pushUndo(); t.solo=!t.solo; renderAll(); applyLive(); scheduleSave();
@@ -1759,9 +2086,40 @@ $("takeList").addEventListener("input",e=>{
     }
     restartSoon();
   }
+  else if(act==="fxamt"){
+    t.fx.amount=parseFloat(v);
+    if(vEl) vEl.textContent=Math.round(t.fx.amount*100);
+  }
   else if(act==="name"){ t.name=inp.value.slice(0,30); }
   scheduleSave();
 });
+/* amount renders on release, not on every tick of the slider */
+$("takeList").addEventListener("change",e=>{
+  const inp=e.target.closest('[data-act="fxamt"]'); if(!inp) return;
+  const row=e.target.closest(".take"); if(!row) return;
+  const t=S.takes.find(x=>x.id==row.dataset.id); if(t) renderFx(t);
+});
+/* A/B: hold to hear the raw take, release to hear the sound again */
+let abHeld=null;
+function abEnd(){
+  if(!abHeld) return;
+  const {t,btn}=abHeld; abHeld=null;
+  t.abRaw=false; btn.classList.remove("on"); btn.textContent="Hold to hear raw";
+  applyLive();
+}
+$("takeList").addEventListener("pointerdown",e=>{
+  const btn=e.target.closest('[data-act="ab"]'); if(!btn) return;
+  const row=btn.closest(".take"); if(!row) return;
+  const t=S.takes.find(x=>x.id==row.dataset.id); if(!t) return;
+  e.preventDefault();
+  abEnd();
+  abHeld={t:t,btn:btn};
+  t.abRaw=true; btn.classList.add("on"); btn.textContent="Raw";
+  try{ btn.setPointerCapture(e.pointerId); }catch(err){}
+  if(!S.playing&&!S.recording) play(S.playhead); else applyLive();
+});
+document.addEventListener("pointerup",abEnd);
+document.addEventListener("pointercancel",abEnd);
 
 function bindTog(id,key,after){
   $(id).addEventListener("click",()=>{
