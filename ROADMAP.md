@@ -48,8 +48,8 @@ fits it. Rules taken from real use:
   record starts with it (off by default; imports are left alone; saved per
   person, not per session)
 
-- Autotune (per take): Off / Natural / Tight / Robot / Melody (Melody stretches
-  a rap voice's natural rise and fall into a bigger tune before snapping), key picker with
+- Autotune (per take): Off / Natural / Tight / Robot (a stronger Robot and a
+  "Melody" mode were tried and rolled back: no better to the ear), key picker with
   Major / Minor / Any note, and a one-tap "use the beat's key"; YIN pitch
   tracking + PSOLA re-pitching (keeps the voice's character); beat key found
   in the background; stacks under any Tone; runs in the worker
