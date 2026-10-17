@@ -25,6 +25,23 @@ fits it. Rules taken from real use:
 - **Your data stays on your phone.** Sessions are saved in each person's own
   browser and are never shared through the link.
 
+## UI overhaul (in progress)
+
+The new design lives in `next.html` (open it at the same address with
+`next.html` on the end). `index.html` stays the stable app until the new one
+is approved; both read the same saved sessions. Based on the ChatGPT mockup
+(one shared timeline, pinned record controls, bottom sheets) with ideas from
+the Gemini one (date-named sessions, quick drag scrubbing).
+
+Done so far: new visual system (warm black, brass, real-feeling record
+button, gradient waveforms, beat grid), shared timeline with a pinned ruler,
+tap a take to edit it in a bottom sheet (Mix / Sound), hold then drag to
+move, Sessions / Settings / Export sheets, live recording lane with mic
+meter, date-named sessions, Saved indicator.
+
+Next: zoom and a follow-the-playhead timeline for long beats, trim, loop,
+punch-in, redo, then swap `next.html` in as `index.html`.
+
 ## Done
 
 - Bluetooth latency lock-in keeps its correction when a take starts at 0:00
