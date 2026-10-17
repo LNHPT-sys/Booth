@@ -207,6 +207,7 @@
   .segb:hover{color:var(--bone);border-color:var(--ash2);}
   .segb.on{background:var(--brass);border-color:var(--brass);color:#17140F;font-weight:700;}
   .btn.sm.ab.on{background:var(--bone);border-color:var(--bone);color:var(--ground);}
+  .fxhelp{font-family:var(--body);font-size:11.5px;color:var(--ash);line-height:1.4;margin:-1px 0 3px 41px;}
   .sel{
     height:27px;border-radius:4px;border:1px solid var(--edge2);background:var(--panel2);color:var(--bone);
     font-family:var(--mono);font-size:11px;padding:0 6px;flex:none;width:58px;
@@ -711,9 +712,11 @@ function fxCore(){
   /* ---------------- autotune: find the pitch, snap it to a key, re-pitch ---------------- */
   const SCALES={major:[0,2,4,5,7,9,11],minor:[0,2,3,5,7,8,10],any:[0,1,2,3,4,5,6,7,8,9,10,11]};
   const TUNE_MODES={          /* tau: seconds the correction takes to settle; hyst: stickiness at note edges */
-    natural:{tau:0.13,strength:0.85,hyst:0.2,start:0.5},
-    tight:  {tau:0.035,strength:1,hyst:0.12,start:1},
-    robot:  {tau:0,strength:1,hyst:0,start:1}
+    natural:{tau:0.13,strength:0.85,hyst:0.2,start:0.5,expand:1},
+    tight:  {tau:0.035,strength:1,hyst:0.12,start:1,expand:1},
+    robot:  {tau:0,strength:1,hyst:0.3,start:1,expand:1},
+    /* melody: your natural rise and fall is stretched into a bigger tune, then snapped to the key */
+    melody: {tau:0,strength:1,hyst:0.3,start:1,expand:2.6}
   };
   /* YIN pitch tracker on a decimated copy of the take. */
   function trackPitch(mono,sr){
@@ -786,16 +789,32 @@ function fxCore(){
     /* per-frame correction in semitones */
     const cs=new Float32Array(nF);
     const k=P.tau>0?1-Math.exp(-(H/sr)/P.tau):1;
+    /* the voice's own centre of gravity (median of the last/next half second),
+       so melody can stretch movement around it */
+    let anchor=null;
+    if(P.expand>1){
+      const idx=[]; for(let f=0;f<nF;f++) if(vo[f]) idx.push(f);
+      anchor=new Float32Array(nF);
+      const win=100; let lo=0, hi=0;
+      for(let q=0;q<idx.length;q++){
+        const f=idx[q];
+        while(idx[lo]<f-win) lo++;
+        while(hi<idx.length&&idx[hi]<=f+win) hi++;
+        const w=[]; for(let k=lo;k<hi;k++) w.push(69+12*Math.log2(f0[idx[k]]/440));
+        w.sort((a,b)=>a-b); anchor[f]=w[w.length>>1];
+      }
+    }
     let prevNote=-1, cur=0, any=false;
     for(let f=0;f<nF;f++){
       if(!vo[f]){ prevNote=-1; continue; }
       any=true;
       const midi=69+12*Math.log2(f0[f]/440);
-      const note=nearestNote(midi,allowed,prevNote,P.hyst);
+      const aim=anchor?anchor[f]+(midi-anchor[f])*P.expand:midi;
+      const note=nearestNote(aim,allowed,prevNote,P.hyst);
       const onset=prevNote<0;
       prevNote=note;
       let corr=(note-midi)*P.strength;
-      if(corr>2) corr=2; else if(corr<-2) corr=-2;
+      if(corr>4) corr=4; else if(corr<-4) corr=-4;
       if(onset) cur=corr*P.start; else cur+=(corr-cur)*k;
       cs[f]=cur;
     }
@@ -1104,7 +1123,13 @@ function fxInline(seq){
   },30);
 }
 const NOTE_NAMES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const TUNE_LABEL={off:"Off",natural:"Natural",tight:"Tight",robot:"Robot"};
+const TUNE_LABEL={off:"Off",natural:"Natural",tight:"Tight",robot:"Robot",melody:"Melody"};
+const TUNE_HELP={
+  natural:"A gentle nudge toward the notes. Hard to hear — it just sounds in tune.",
+  tight:"A firmer snap to the notes, still sounds like you.",
+  robot:"Hard snap, notes held in steps. The T-Pain sound.",
+  melody:"Stretches how your voice rises and falls into a bigger tune, then locks it to the key. Made for rap."
+};
 const SCALE_LABEL={major:"Major",minor:"Minor",any:"Any note"};
 function fxActive(t){ return !!t.fx&&(t.fx.preset!=="off"||t.fx.tune.mode!=="off"); }
 function fxKeyOf(t){
@@ -1779,7 +1804,8 @@ function takeRow(t,i){
         Object.keys(TUNE_LABEL).map(m=>'<button class="segb'+(t.fx.tune.mode===m?" on":"")+'" data-act="tunemode" data-mode="'+m+'">'+TUNE_LABEL[m]+'</button>').join("")+
       '</div></div>'+
       (t.fx.tune.mode!=="off"
-        ? '<div class="knob"><span class="k">Key</span>'+
+        ? '<div class="fxhelp">'+TUNE_HELP[t.fx.tune.mode]+'</div>'+
+          '<div class="knob"><span class="k">Key</span>'+
             '<select class="sel" data-act="tunekey" aria-label="Key">'+
               NOTE_NAMES.map((nm,i)=>'<option value="'+i+'"'+(t.fx.tune.root===i?" selected":"")+'>'+nm+'</option>').join("")+
             '</select>'+
