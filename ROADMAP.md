@@ -38,11 +38,12 @@ take to edit it in a bottom sheet (Mix / Sound), hold then drag to move,
 Sessions / Settings / Export sheets, live recording lane with mic meter,
 date-named sessions, Saved indicator.
 
-Next: zoom and a follow-the-playhead timeline for long beats, trim, loop,
-punch-in ("Replace" vs "New take"), redo.
+Next: trim, loop, punch-in ("Replace" vs "New take"), redo.
 
 ## Done
 
+- Zoom and a follow-the-playhead timeline: pinch, − / + buttons, trackpad
+  zoom, overview strip to jump around; the view follows playback and recording
 - Bluetooth latency lock-in keeps its correction when a take starts at 0:00
 - Sessions: new, open, rename, clear, delete
 - Live volume, pan, mute and solo during playback; sync restarts in place
@@ -77,5 +78,5 @@ punch-in ("Replace" vs "New take"), redo.
   doubled/stacked notes
 - Trim the start and end of a take, split, cut out a section
 - Punch in: re-record one bar or line
-- Zoom the timeline; loop a section such as the hook
+- Loop a section such as the hook
 - Markers for verse and hook
