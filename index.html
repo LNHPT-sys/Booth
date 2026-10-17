@@ -2120,6 +2120,7 @@ $("takeList").addEventListener("click",e=>{
     const p=btn.dataset.preset;
     if(!FX_LABEL[p]||p===t.fx.preset) return;
     pushUndo(); t.fx.preset=p; t.abRaw=false; t.abLatch=false;
+    t.fx.amount=1;                      /* full strength is where it sounds best; turn it down if you like */
     t.fx.verb=SPACE_DEFAULT[p][0]; t.fx.echo=SPACE_DEFAULT[p][1];
     renderAll(); renderFx(t); scheduleSave(); restartSoon();
     return;
