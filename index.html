@@ -442,6 +442,19 @@
         <span><span class="lab">Voice monitor</span><span class="sub">Hear yourself while recording — headphones only</span></span>
         <span class="sw"><i></i></span>
       </button>
+      <button class="tog" id="tgAuto" aria-pressed="false">
+        <span><span class="lab">Sound on new recordings</span><span class="sub">Every take you record starts with the Tone below. Your raw recording is always kept underneath.</span></span>
+        <span class="sw"><i></i></span>
+      </button>
+      <div class="knob" id="autoTone" hidden style="padding:2px 0 10px;border-bottom:1px solid var(--edge);">
+        <span class="k">Tone</span>
+        <div class="seg">
+          <button class="segb" data-auto="clean">Clean</button>
+          <button class="segb" data-auto="radio">Radio</button>
+          <button class="segb" data-auto="adlib">Adlib</button>
+          <button class="segb" data-auto="doubles">Doubles</button>
+        </div>
+      </div>
       <button class="tog" id="tgCount" aria-pressed="true">
         <span><span class="lab">Count-in</span><span class="sub">Four clicks before record rolls</span></span>
         <span class="sw"><i></i></span>
@@ -1028,6 +1041,24 @@ function loadLatency(){
   try{ const v=parseInt(localStorage.getItem("booth.latency")||"0",10);
        if(isFinite(v)) S.latency=clamp(v,-1500,1500); }catch(e){}
 }
+/* Auto sound belongs to the person and their voice, so like the latency
+   lock it lives outside the session. */
+const AUTO={on:false,preset:"radio"};
+function loadAuto(){
+  try{
+    const v=JSON.parse(localStorage.getItem("booth.autofx")||"null");
+    if(v&&typeof v.on==="boolean") AUTO.on=v.on;
+    if(v&&FX_LABEL[v.preset]&&v.preset!=="off") AUTO.preset=v.preset;
+  }catch(e){}
+}
+function saveAuto(){
+  try{ localStorage.setItem("booth.autofx",JSON.stringify(AUTO)); }catch(e){}
+}
+function renderAuto(){
+  setTog("tgAuto",AUTO.on);
+  $("autoTone").hidden=!AUTO.on;
+  document.querySelectorAll("[data-auto]").forEach(b=>b.classList.toggle("on",b.dataset.auto===AUTO.preset));
+}
 function saveLatency(){
   try{ localStorage.setItem("booth.latency",String(S.latency)); }catch(e){}
 }
@@ -1528,6 +1559,7 @@ function renderMix(){
     : "Load a beat or a take first";
   setTog("tgMonitor",S.monitor);
   setTog("tgCount",S.countIn); setTog("tgLoop",S.loop); setTog("tgStems",S.stems);
+  renderAuto();
 }
 function setTog(id,on){ $(id).setAttribute("aria-pressed",on?"true":"false"); }
 
@@ -1893,7 +1925,10 @@ async function finishRec(){
     /* no clamp at zero: recording from the top is the normal case, and
        clamping there threw the whole latency correction away */
     addTake(buf,blob,recMime,recFrom-S.latency/1000,"Take "+(S.takes.length+1),true);
-    toast("Take "+S.takes.length+" captured — "+fmt(buf.duration).slice(0,5)+". Off the beat? Slide SYNC or drag it.","good");
+    const nt=S.takes[S.takes.length-1];
+    toast("Take "+S.takes.length+" captured — "+fmt(buf.duration).slice(0,5)+
+      (nt&&nt.fx.preset!=="off"?". "+FX_LABEL[nt.fx.preset]+" is on and rendering; hold the raw button to compare. ":". ")+
+      "Off the beat? Slide SYNC or drag it.","good");
   }catch(e){
     toast("Couldn't read that take back: "+(e.message||e),"bad");
   }
@@ -1908,6 +1943,12 @@ function addTake(buffer,blob,mime,offset,name,recorded){
     recorded:!!recorded,
     fx:{preset:"off",amount:0.6,verb:0,echo:0},fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false,abLatch:false
   });
+  const t=S.takes[S.takes.length-1];
+  /* only takes recorded here; imported files are left exactly as they came */
+  if(recorded&&AUTO.on&&FX_LABEL[AUTO.preset]){
+    t.fx={preset:AUTO.preset,amount:1,verb:SPACE_DEFAULT[AUTO.preset][0],echo:SPACE_DEFAULT[AUTO.preset][1]};
+    renderFx(t);
+  }
   renderAll(); scheduleSave();
 }
 
@@ -2225,6 +2266,15 @@ $("takeList").addEventListener("contextmenu",e=>{ if(e.target.closest('[data-act
 document.addEventListener("pointerup",abEnd);
 document.addEventListener("pointercancel",abEnd);
 
+$("tgAuto").addEventListener("click",()=>{
+  AUTO.on=!AUTO.on; saveAuto(); renderAuto();
+  toast(AUTO.on
+    ? "New recordings will start with "+FX_LABEL[AUTO.preset]+". Takes you already have are unchanged."
+    : "New recordings will come in raw.");
+});
+document.querySelectorAll("[data-auto]").forEach(b=>b.addEventListener("click",()=>{
+  AUTO.preset=b.dataset.auto; saveAuto(); renderAuto();
+}));
 function bindTog(id,key,after){
   $(id).addEventListener("click",()=>{
     S[key]=!S[key]; setTog(id,S[key]);
@@ -2325,6 +2375,7 @@ document.addEventListener("keydown",e=>{
 /* ============================ boot ============================ */
 (async function boot(){
   loadLatency();
+  loadAuto();
   syncBarH();
   probeSync();
   renderCheck();

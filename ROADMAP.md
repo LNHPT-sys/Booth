@@ -44,6 +44,9 @@ fits it. Rules taken from real use:
 - Tone and Space split: pick a Tone, then dial Reverb and Echo (tempo-synced)
   separately; Adlib is a shortcut that sets both
 - A/B raw button: tap to latch, or hold; no text selection on buttons
+- "Sound on new recordings" setting: pick a Tone once and every take you
+  record starts with it (off by default; imports are left alone; saved per
+  person, not per session)
 
 ## Ideas, not started
 
