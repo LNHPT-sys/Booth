@@ -34,6 +34,8 @@ fits it. Rules taken from real use:
 - Drag takes to move them; undo for every edit (button and Ctrl/Cmd+Z)
 - Align removed; the beat's tempo is now measured on load so the Bar buttons
   always work
+- Live recording strip in the bottom bar: your vocal draws over the beat as
+  you record, with a mic meter that says good, quiet or too loud
 - Raw audio only: the vocal processing was removed after it made takes sound
   worse; recording asks for 256kbps
 

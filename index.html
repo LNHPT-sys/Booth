@@ -58,7 +58,7 @@
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 
   /* ---- shell ---- */
-  .wrap{padding:0 16px;padding-bottom:180px;max-width:720px;margin:0 auto;}
+  .wrap{padding:0 16px;padding-bottom:calc(var(--barh,120px) + 60px);max-width:720px;margin:0 auto;}
 
   .top{
     padding-block:18px 14px;border-bottom:1px solid var(--edge);
@@ -240,6 +240,19 @@
     backdrop-filter:blur(10px);
   }
   .bar-in{max-width:720px;margin:0 auto;}
+  /* live recording strip + level meter, pinned in the transport bar */
+  .reclane{position:relative;height:44px;background:var(--panel2);border-radius:4px;overflow:hidden;margin:2px 0 6px;}
+  .reclane canvas{display:block;width:100%;height:100%;}
+  .reclane .tag{
+    position:absolute;left:7px;top:5px;font-family:var(--mono);font-size:9px;letter-spacing:.16em;
+    color:var(--rec);text-transform:uppercase;pointer-events:none;
+  }
+  .recmeter{display:flex;align-items:center;gap:8px;margin:0 0 4px;}
+  .recmeter .lab{font-family:var(--mono);font-size:9px;letter-spacing:.14em;color:var(--ash2);text-transform:uppercase;width:44px;flex:none;}
+  .recmeter .m{flex:1;height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;}
+  .recmeter .m i{display:block;height:100%;width:0;background:var(--go);}
+  .recmeter .hint{font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:var(--ash2);width:74px;flex:none;text-align:right;}
+  .recmeter .hint.bad{color:var(--rec);}
   .scrub{height:28px;display:flex;align-items:center;cursor:pointer;touch-action:pan-y;}
   .scrub .track{width:100%;height:3px;border-radius:2px;background:var(--panel2);position:relative;}
   .scrub .fill{height:100%;border-radius:2px;background:var(--brass);width:0;}
@@ -286,7 +299,7 @@
     padding-block:18px 4px;letter-spacing:.02em;
   }
   .toast{
-    position:fixed;left:16px;right:16px;bottom:126px;z-index:40;margin:0 auto;max-width:520px;
+    position:fixed;left:16px;right:16px;bottom:calc(var(--barh,120px) + 10px);z-index:40;margin:0 auto;max-width:520px;
     background:var(--panel2);border:1px solid var(--edge2);border-radius:6px;padding:11px 13px;
     font-family:var(--mono);font-size:11px;color:var(--bone);line-height:1.5;
   }
@@ -436,6 +449,10 @@
 
 <div class="bar">
   <div class="bar-in">
+    <div class="reclane" id="recLane" hidden><canvas id="recCv"></canvas><span class="tag" id="recTag">&#9679; Recording</span></div>
+    <div class="recmeter" id="recMeter" hidden>
+      <span class="lab">Mic</span><span class="m"><i id="recMeterFill"></i></span><span class="hint" id="recHint"></span>
+    </div>
     <div class="scrub" id="scrub"><div class="track"><div class="fill" id="scrubFill"></div></div></div>
     <div class="ctrls">
       <span class="tc" id="tcNow">00:00.0</span>
@@ -1272,21 +1289,94 @@ function setPlayIcon(){
 }
 
 /* ============================ metering ============================ */
+/* The transport bar grows while recording; everything that sits above
+   it (toasts, page padding) reads its height from --barh. */
+function syncBarH(){
+  const b=document.querySelector(".bar");
+  if(b) document.documentElement.style.setProperty("--barh",b.offsetHeight+"px");
+}
+
+/* Live take: while recording, the bar shows the beat faintly and draws the
+   incoming vocal on top of it in real time, on the same timeline the take
+   will land on. */
+const REC={peaks:[],from:0,span:1,beatImg:null,clipT:0,loudT:0};
+function recSpan(){ return Math.max(duration(),S.playhead+4); }
+function recLaneStart(){
+  REC.peaks=[]; REC.from=recFrom-S.latency/1000; REC.span=recSpan(); REC.beatImg=null;
+  $("recLane").hidden=false; syncBarH();
+}
+function recLaneEnd(){
+  $("recLane").hidden=true; $("recMeter").hidden=true; syncBarH();
+}
+function drawRecLane(){
+  const cv=$("recCv"), w=cv.clientWidth, h=cv.clientHeight;
+  if(!w||!h) return;
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  if(cv.width!==Math.floor(w*dpr)){ cv.width=Math.floor(w*dpr); cv.height=Math.floor(h*dpr); REC.beatImg=null; }
+  if(S.playhead+1>REC.span){ REC.span=recSpan()*1.25; REC.beatImg=null; }
+  const g=cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0);
+  /* beat backdrop, cached until the scale changes */
+  if(!REC.beatImg){
+    g.clearRect(0,0,w,h);
+    if(S.beat){
+      const d=S.beat.buffer.getChannelData(0), sr=S.beat.buffer.sampleRate, mid=h/2;
+      g.fillStyle="rgba(147,139,124,.28)";
+      for(let x=0;x<w;x++){
+        const a=Math.floor((x/w)*REC.span*sr), b=Math.min(d.length,Math.floor(((x+1)/w)*REC.span*sr));
+        let pk=0; for(let i=a;i<b;i+=8){ const v=Math.abs(d[i]); if(v>pk) pk=v; }
+        const y=pk*mid*0.9; g.fillRect(x,mid-y,1,Math.max(1,y*2));
+      }
+    }
+    REC.beatImg=g.getImageData(0,0,cv.width,cv.height);
+  }
+  g.putImageData(REC.beatImg,0,0);
+  /* the vocal so far */
+  const mid=h/2, cols=new Float32Array(Math.ceil(w)+1);
+  for(const p of REC.peaks){
+    const x=Math.floor(((REC.from+p[0])/REC.span)*w);
+    if(x>=0&&x<cols.length&&p[1]>cols[x]) cols[x]=p[1];
+  }
+  g.fillStyle="#F04E23";
+  for(let x=0;x<cols.length;x++){
+    if(!cols[x]) continue;
+    const y=Math.min(1,cols[x]*1.6)*mid*0.95;
+    g.fillRect(x,mid-y,1,Math.max(1,y*2));
+  }
+  /* playhead */
+  const px=((REC.from+(S.playhead-recFrom))/REC.span)*w;
+  g.fillStyle="#F04E23"; g.fillRect(Math.max(0,px-0.75),0,1.5,h);
+}
+
 function meterTick(){
   if(!analyser) return;
   const b=new Uint8Array(analyser.fftSize);
   analyser.getByteTimeDomainData(b);
-  let s=0;
-  for(let i=0;i<b.length;i++){ const v=(b[i]-128)/128; s+=v*v; }
+  let s=0, pk=0;
+  for(let i=0;i<b.length;i++){ const v=(b[i]-128)/128; s+=v*v; const a=Math.abs(v); if(a>pk) pk=a; }
   const rms=Math.sqrt(s/b.length), lvl=clamp(rms*2.3,0,1);
+  const col = lvl>0.88?"var(--rec)":lvl>0.62?"var(--brass)":"var(--go)";
   const f=$("meterFill");
-  f.style.width=(lvl*100)+"%";
-  f.style.background = lvl>0.88?"var(--rec)":lvl>0.62?"var(--brass)":"var(--go)";
+  f.style.width=(lvl*100)+"%"; f.style.background=col;
+  const rf=$("recMeterFill");
+  rf.style.width=(lvl*100)+"%"; rf.style.background=col;
+  /* plain-language level hint: clipping wins, then too quiet */
+  const now=performance.now();
+  if(pk>0.98) REC.clipT=now;
+  if(lvl>=0.04) REC.loudT=now;
+  const hint=$("recHint");
+  if(now-REC.clipT<1200){ hint.textContent="too loud"; hint.className="hint bad"; }
+  else if(now-REC.loudT>1500){ hint.textContent="quiet"; hint.className="hint"; }
+  else { hint.textContent="good"; hint.className="hint"; }
+  if(S.recording){
+    REC.peaks.push([S.playhead-recFrom,pk]);
+    drawRecLane();
+  }
   mraf=requestAnimationFrame(meterTick);
 }
 function stopMeter(){
   cancelAnimationFrame(mraf);
   const f=$("meterFill"); f.style.width="0%";
+  $("recMeterFill").style.width="0%";
 }
 
 /* ============================ recording ============================ */
@@ -1347,6 +1437,7 @@ async function startRec(){
     monGain=c.createGain(); monGain.gain.value=0.8;
     micSrc.connect(monGain); monGain.connect(c.destination);
   }
+  $("recMeter").hidden=false; syncBarH();
   cancelAnimationFrame(mraf); mraf=requestAnimationFrame(meterTick);
 
   if(S.countIn) await countIn(c);
@@ -1358,7 +1449,7 @@ async function startRec(){
   try{ recorder=new MediaRecorder(st,ro); }
   catch(e){
     try{ recorder=new MediaRecorder(st); recMime=recorder.mimeType||""; }
-    catch(e2){ toast("This browser can't record audio.","bad"); return; }
+    catch(e2){ stopMeter(); recLaneEnd(); toast("This browser can't record audio.","bad"); return; }
   }
   chunks=[];
   recorder.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
@@ -1366,6 +1457,7 @@ async function startRec(){
   recFrom=S.playhead;
   recorder.start();
   S.recording=true; renderUndo();
+  recLaneStart();
   $("recBtn").classList.add("on");
   $("recBtn").setAttribute("aria-label","Stop recording");
   renderMix();
@@ -1382,7 +1474,7 @@ async function finishRec(){
   S.recording=false; renderUndo();
   $("recBtn").classList.remove("on");
   $("recBtn").setAttribute("aria-label","Record");
-  stopMeter();
+  stopMeter(); recLaneEnd();
   if(monGain){ try{ monGain.disconnect(); }catch(e){} monGain=null; }
   const blob=new Blob(chunks,{type:recMime||"audio/webm"});
   chunks=[];
@@ -1760,7 +1852,7 @@ $("recheck").addEventListener("click",async()=>{
 let rz=0;
 window.addEventListener("resize",()=>{
   clearTimeout(rz);
-  rz=setTimeout(()=>{ renderBeat(); renderTakes(); renderHeads(); },180);
+  rz=setTimeout(()=>{ renderBeat(); renderTakes(); renderHeads(); syncBarH(); },180);
 });
 document.addEventListener("keydown",e=>{
   if(e.target&&/INPUT|TEXTAREA/.test(e.target.tagName)) return;
@@ -1771,6 +1863,7 @@ document.addEventListener("keydown",e=>{
 /* ============================ boot ============================ */
 (async function boot(){
   loadLatency();
+  syncBarH();
   probeSync();
   renderCheck();
   renderAll();
