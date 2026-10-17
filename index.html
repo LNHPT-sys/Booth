@@ -207,6 +207,10 @@
   .segb:hover{color:var(--bone);border-color:var(--ash2);}
   .segb.on{background:var(--brass);border-color:var(--brass);color:#17140F;font-weight:700;}
   .btn.sm.ab.on{background:var(--bone);border-color:var(--bone);color:var(--ground);}
+  .sel{
+    height:27px;border-radius:4px;border:1px solid var(--edge2);background:var(--panel2);color:var(--bone);
+    font-family:var(--mono);font-size:11px;padding:0 6px;flex:none;width:58px;
+  }
   .fxst{font-family:var(--mono);font-size:9.5px;color:var(--ash2);letter-spacing:.04em;flex:1;text-align:right;align-self:center;}
   .knob{display:flex;align-items:center;gap:9px;}
   .knob .k{
@@ -703,6 +707,169 @@ function fxCore(){
     return outs;
   }
 
+
+  /* ---------------- autotune: find the pitch, snap it to a key, re-pitch ---------------- */
+  const SCALES={major:[0,2,4,5,7,9,11],minor:[0,2,3,5,7,8,10],any:[0,1,2,3,4,5,6,7,8,9,10,11]};
+  const TUNE_MODES={          /* tau: seconds the correction takes to settle; hyst: stickiness at note edges */
+    natural:{tau:0.13,strength:0.85,hyst:0.2,start:0.5},
+    tight:  {tau:0.035,strength:1,hyst:0.12,start:1},
+    robot:  {tau:0,strength:1,hyst:0,start:1}
+  };
+  /* YIN pitch tracker on a decimated copy of the take. */
+  function trackPitch(mono,sr){
+    const n=mono.length, D=Math.max(1,Math.round(sr/16000)), sd=sr/D, m=Math.floor(n/D);
+    const xd=new Float32Array(m);
+    for(let i=0;i<m;i++){ let t=0; for(let k=0;k<D;k++) t+=mono[i*D+k]; xd[i]=t/D; }
+    const H=Math.max(1,Math.round(sr*0.005)), nF=Math.floor(n/H);
+    const W=Math.round(sd*0.03), tMin=Math.max(2,Math.floor(sd/700)), tMax=Math.min(Math.floor(sd/70),W);
+    const f0=new Float32Array(nF), vo=new Uint8Array(nF), rmsF=new Float32Array(nF);
+    let maxR=0;
+    const d=new Float32Array(tMax+2), cm=new Float32Array(tMax+2);
+    for(let f=0;f<nF;f++){
+      const c=Math.floor((f+0.5)*H/D), a=c-(W>>1);
+      let e=0; for(let j=0;j<W;j++){ const v=xd[a+j]||0; e+=v*v; }
+      rmsF[f]=Math.sqrt(e/W); if(rmsF[f]>maxR) maxR=rmsF[f];
+    }
+    for(let f=0;f<nF;f++){
+      if(rmsF[f]<maxR*0.04) continue;
+      const c=Math.floor((f+0.5)*H/D), a=c-(W>>1);
+      if(a<0||a+W+tMax>=m) continue;
+      let run=0; cm[0]=1;
+      for(let t=1;t<=tMax;t++){
+        let s=0; for(let j=0;j<W;j++){ const q=xd[a+j]-xd[a+j+t]; s+=q*q; }
+        d[t]=s; run+=s; cm[t]=run>0?s*t/run:1;
+      }
+      let best=-1;
+      for(let t=tMin;t<=tMax;t++){
+        if(cm[t]<0.16){ while(t+1<=tMax&&cm[t+1]<cm[t]) t++; best=t; break; }
+      }
+      if(best<0){ let mn=9,mt=-1; for(let t=tMin;t<=tMax;t++) if(cm[t]<mn){ mn=cm[t]; mt=t; } if(mn<0.28) best=mt; }
+      if(best<0) continue;
+      let t=best;
+      if(t>tMin&&t<tMax){ const a0=cm[t-1],b0=cm[t],c0=cm[t+1], den=a0-2*b0+c0; if(Math.abs(den)>1e-9) t+= (a0-c0)/(2*den); }
+      const hz=sd/t; if(hz<70||hz>700) continue;
+      f0[f]=hz; vo[f]=1;
+    }
+    /* median of 5 in the note domain; drop voiced blips shorter than 4 frames */
+    const sm=new Float32Array(nF);
+    for(let f=0;f<nF;f++){
+      if(!vo[f]) continue;
+      const w=[]; for(let k=-2;k<=2;k++){ const g=f+k; if(g>=0&&g<nF&&vo[g]) w.push(f0[g]); }
+      w.sort((x,y)=>x-y); sm[f]=w[w.length>>1];
+    }
+    let f=0;
+    while(f<nF){
+      if(!vo[f]){ f++; continue; }
+      let g=f; while(g<nF&&vo[g]) g++;
+      if(g-f<4) for(let k=f;k<g;k++) vo[k]=0;
+      f=g;
+    }
+    return {f0:sm,vo:vo,H:H,nF:nF};
+  }
+  function nearestNote(midi,allowed,prev,hyst){
+    let best=-1,bd=1e9;
+    const r=Math.round(midi);
+    for(let k=r-4;k<=r+4;k++){ if(!allowed[((k%12)+12)%12]) continue; const dd=Math.abs(midi-k); if(dd<bd){ bd=dd; best=k; } }
+    /* stay on the previous note until the voice is clearly closer to another */
+    if(prev>=0&&hyst>0&&allowed[((prev%12)+12)%12]&&Math.abs(midi-prev)<=bd+hyst) return prev;
+    return best;
+  }
+  function tuneVoice(chans,sr,tune){
+    const P=TUNE_MODES[tune.mode]; if(!P) return chans;
+    const nc=chans.length, n=chans[0].length;
+    const mono=new Float32Array(n);
+    for(let c=0;c<nc;c++){ const d=chans[c]; for(let i=0;i<n;i++) mono[i]+=d[i]/nc; }
+    const tr=trackPitch(mono,sr), H=tr.H, nF=tr.nF, vo=tr.vo, f0=tr.f0;
+    const allowed=new Array(12).fill(false);
+    for(const st of (SCALES[tune.scale]||SCALES.major)) allowed[(tune.root+st)%12]=true;
+    /* per-frame correction in semitones */
+    const cs=new Float32Array(nF);
+    const k=P.tau>0?1-Math.exp(-(H/sr)/P.tau):1;
+    let prevNote=-1, cur=0, any=false;
+    for(let f=0;f<nF;f++){
+      if(!vo[f]){ prevNote=-1; continue; }
+      any=true;
+      const midi=69+12*Math.log2(f0[f]/440);
+      const note=nearestNote(midi,allowed,prevNote,P.hyst);
+      const onset=prevNote<0;
+      prevNote=note;
+      let corr=(note-midi)*P.strength;
+      if(corr>2) corr=2; else if(corr<-2) corr=-2;
+      if(onset) cur=corr*P.start; else cur+=(corr-cur)*k;
+      cs[f]=cur;
+    }
+    if(!any) return chans;
+    /* pitch at an arbitrary sample time, from the frame track */
+    const f0At=(t)=>{
+      let x=t/H-0.5; if(x<0) x=0; if(x>nF-1) x=nF-1;
+      let a=Math.floor(x), b=Math.min(nF-1,a+1), fr=x-a;
+      if(!vo[a]&&vo[b]) a=b; else if(vo[a]&&!vo[b]) b=a;
+      return f0[a]+(f0[b]-f0[a])*fr;
+    };
+    const csAt=(t)=>{
+      let x=t/H-0.5; if(x<0) x=0; if(x>nF-1) x=nF-1;
+      const a=Math.floor(x), b=Math.min(nF-1,a+1), fr=x-a;
+      return cs[a]+(cs[b]-cs[a])*fr;
+    };
+    const out=chans.map(()=>new Float32Array(n)), acc=chans.map(()=>new Float32Array(n+8)), ws=new Float32Array(n+8);
+    const mask=new Float32Array(n);
+    let f=0;
+    while(f<nF){
+      if(!vo[f]){ f++; continue; }
+      let g=f; while(g<nF&&vo[g]) g++;
+      const s0=f*H, s1=Math.min(n-1,g*H);
+      for(let i=s0;i<s1;i++) mask[i]=1;
+      /* pitch marks: one per period, nudged onto the waveform's peak */
+      const marks=[];
+      let t=s0, T=sr/f0At(s0+1);
+      let a=Math.round(t), b=Math.min(n-1,Math.round(t+T)), bi=a;
+      for(let i=a;i<=b;i++) if(mono[i]>mono[bi]) bi=i;
+      marks.push(bi);
+      for(;;){
+        const last=marks[marks.length-1];
+        T=sr/f0At(last);
+        const pr=last+T;
+        if(pr>s1) break;
+        const lo=Math.max(last+1,Math.round(pr-0.3*T)), hi=Math.min(n-1,Math.round(pr+0.3*T));
+        let mi=Math.round(pr);
+        for(let i=lo;i<=hi;i++) if(mono[i]>mono[mi]) mi=i;
+        if(mi<=last) mi=last+Math.max(2,Math.round(T));
+        marks.push(mi);
+        if(marks.length>1e6) break;
+      }
+      if(marks.length>=3){
+        let kk=0, sPos=marks[0];
+        while(sPos<s1){
+          while(kk+1<marks.length&&Math.abs(marks[kk+1]-sPos)<=Math.abs(marks[kk]-sPos)) kk++;
+          const am=marks[kk];
+          const Ta=Math.max(8,Math.round(((marks[Math.min(marks.length-1,kk+1)]-marks[Math.max(0,kk-1)])/(kk>0&&kk<marks.length-1?2:1))||sr/f0At(am)));
+          const L=Math.min(Ta,Math.round(sr/70));
+          const dst0=Math.round(sPos);
+          for(let j=-L;j<=L;j++){
+            const si=am+j, di=dst0+j; if(si<0||si>=n||di<0||di>=n) continue;
+            const w=0.5+0.5*Math.cos(Math.PI*j/L);
+            for(let c=0;c<nc;c++) acc[c][di]+=chans[c][si]*w;
+            ws[di]+=w;
+          }
+          const fT=f0At(sPos)*Math.pow(2,csAt(sPos)/12);
+          sPos+=sr/fT;
+        }
+      }
+      f=g;
+    }
+    /* soften the edges of the voiced regions so the hand-offs don't click */
+    const R=Math.max(1,Math.round(sr*0.004)), cum=new Float32Array(n+1);
+    for(let i=0;i<n;i++) cum[i+1]=cum[i]+mask[i];
+    for(let i=0;i<n;i++){
+      const a=Math.max(0,i-R), b=Math.min(n,i+R+1), m=(cum[b]-cum[a])/(b-a);
+      for(let c=0;c<nc;c++){
+        const ps=ws[i]>0.05?acc[c][i]/ws[i]:chans[c][i];
+        out[c][i]=m*ps+(1-m)*chans[c][i];
+      }
+    }
+    return out;
+  }
+
   const PRESETS={
     clean:  {dn:1, hp:80,  mud:-2,  pres:2.5, air:2, gate:1, ratio:3, depth:6,  deess:1,   sat:0,   verb:0,    delay:0, lp:0,    trim:0,    stereo:false},
     radio:  {dn:1, hp:120, mud:-3,  pres:4,   air:3, gate:1, ratio:4, depth:10, deess:1.2, sat:1,   verb:0.10, delay:0, lp:0,    trim:0,    stereo:false},
@@ -710,8 +877,9 @@ function fxCore(){
     doubles:{dn:1, hp:170, mud:-3,  pres:1,   air:0, gate:1, ratio:3, depth:7,  deess:1,   sat:0,   verb:0,    delay:0, lp:9000, trim:-3.5, stereo:false}
   };
 
-  function process(chans,sr,preset,amount,bpm,verbAmt,echoAmt){
-    const P=PRESETS[preset]; if(!P) return {chans:chans};
+  function process(chans,sr,preset,amount,bpm,verbAmt,echoAmt,tune){
+    if(tune&&TUNE_MODES[tune.mode]) chans=tuneVoice(chans,sr,tune);
+    const P=PRESETS[preset]; if(!P) return {chans:chans,gain:0,avgGr:0};
     const a=Math.max(0,Math.min(1,amount)), n=chans[0].length, nc=chans.length;
     verbAmt=Math.max(0,Math.min(1,+verbAmt||0)); echoAmt=Math.max(0,Math.min(1,+echoAmt||0));
     if(P.dn*a>0.02) chans=denoise(chans,sr,P.dn*a);
@@ -856,6 +1024,37 @@ function fxCore(){
     return {chans:out, noise:noise, loud:loud, gain:dB(g),
       avgGr:stN?stGr/stN:0, avgGate:stN?stGate/stN:0, deessPct:stN?100*stDe/stN:0};
   }
+  /* Key of a beat: pitch-class profile of its tonal content, matched against
+     the Krumhansl major/minor profiles. A suggestion, never forced. */
+  function detectKey(chans,sr){
+    const nc=chans.length, n=chans[0].length, N=8192, fft=makeFFT(N);
+    const w=new Float32Array(N); for(let i=0;i<N;i++) w[i]=0.5-0.5*Math.cos(2*Math.PI*i/N);
+    const span=Math.min(n,sr*60), from=Math.max(0,Math.floor((n-span)/2));
+    const chroma=new Float64Array(12), re=new Float32Array(N), im=new Float32Array(N);
+    const lo=Math.ceil(110*N/sr), hi=Math.floor(2200*N/sr);
+    const pcOf=new Int8Array(hi+1);
+    for(let k=lo;k<=hi;k++){ const midi=69+12*Math.log2((k*sr/N)/440); pcOf[k]=((Math.round(midi)%12)+12)%12; }
+    let frames=0;
+    for(let o=from;o+N<=from+span;o+=N>>1){
+      for(let i=0;i<N;i++){ let v=0; for(let c=0;c<nc;c++) v+=chans[c][o+i]; re[i]=v/nc*w[i]; im[i]=0; }
+      fft(re,im);
+      let tot=0; const fr=new Float64Array(12);
+      for(let k=lo;k<=hi;k++){ const m=Math.sqrt(re[k]*re[k]+im[k]*im[k]); fr[pcOf[k]]+=m; tot+=m; }
+      if(tot<=0) continue;
+      for(let c=0;c<12;c++) chroma[c]+=fr[c]/tot;     /* each frame counts equally, loud or not */
+      frames++;
+    }
+    if(!frames) return null;
+    const MAJ=[6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88], MIN=[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
+    const corr=(prof,r)=>{ let ma=0,mb=0; for(let i=0;i<12;i++){ ma+=chroma[i]; mb+=prof[i]; } ma/=12; mb/=12;
+      let nu=0,da=0,db=0; for(let i=0;i<12;i++){ const a=chroma[(i+r)%12]-ma, b=prof[i]-mb; nu+=a*b; da+=a*a; db+=b*b; } return nu/Math.sqrt(da*db+1e-12); };
+    let best={score:-2,root:0,mode:"major"}, second=-2;
+    const all=[];
+    for(let r=0;r<12;r++){ all.push({score:corr(MAJ,r),root:r,mode:"major"}); all.push({score:corr(MIN,r),root:r,mode:"minor"}); }
+    all.sort((a,b)=>b.score-a.score);
+    return {root:all[0].root,mode:all[0].mode,score:all[0].score,margin:all[0].score-all[1].score};
+  }
+  process.tuneVoice=tuneVoice; process.trackPitch=trackPitch; process.detectKey=detectKey;
   return process;
 }
 
@@ -869,18 +1068,50 @@ const SPACE_DEFAULT={off:[0,0],clean:[0,0],radio:[0.1,0],adlib:[0.6,0.6],doubles
 const FX={seq:0,jobs:new Map(),worker:null,inline:null};
 try{
   const src="const process=("+fxCore.toString()+")();"+
-    "self.onmessage=function(e){const d=e.data;try{const r=process(d.chans,d.sr,d.preset,d.amount,d.bpm,d.verb,d.echo);"+
+    "self.onmessage=function(e){const d=e.data;try{"+
+    "if(d.kind==='key'){self.postMessage({kind:'key',kid:d.kid,key:process.detectKey(d.chans,d.sr)});return;}"+
+    "const r=process(d.chans,d.sr,d.preset,d.amount,d.bpm,d.verb,d.echo,d.tune);"+
     "self.postMessage({id:d.id,seq:d.seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr},r.chans.map(function(c){return c.buffer;}));}"+
-    "catch(err){self.postMessage({id:d.id,seq:d.seq,error:String(err&&err.message||err)});}};";
+    "catch(err){self.postMessage({kind:d.kind,kid:d.kid,id:d.id,seq:d.seq,error:String(err&&err.message||err)});}};";
   FX.worker=new Worker(URL.createObjectURL(new Blob([src],{type:"text/javascript"})));
-  FX.worker.onmessage=e=>fxDone(e.data);
+  FX.worker.onmessage=e=>{ if(e.data.kind==="key") keyDone(e.data); else fxDone(e.data); };
   FX.worker.onerror=()=>{ FX.worker=null; };
 }catch(e){ FX.worker=null; }
+const NOTE_NAMES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const TUNE_LABEL={off:"Off",natural:"Natural",tight:"Tight",robot:"Robot"};
+const SCALE_LABEL={major:"Major",minor:"Minor",any:"Any note"};
+function fxActive(t){ return !!t.fx&&(t.fx.preset!=="off"||t.fx.tune.mode!=="off"); }
 function fxKeyOf(t){
-  if(!t.fx||t.fx.preset==="off") return "";
-  return t.fx.preset+"|"+t.fx.amount.toFixed(2)+"|"+t.fx.verb.toFixed(2)+"|"+t.fx.echo.toFixed(2)+"|"+Math.round((S.beat&&S.beat.bpm)||0);
+  if(!fxActive(t)) return "";
+  const tu=t.fx.tune;
+  return t.fx.preset+"|"+t.fx.amount.toFixed(2)+"|"+t.fx.verb.toFixed(2)+"|"+t.fx.echo.toFixed(2)+"|"+Math.round((S.beat&&S.beat.bpm)||0)+
+    "|"+tu.mode+"|"+tu.root+"|"+tu.scale;
 }
-function fxBufOf(t){ return (t.fx&&t.fx.preset!=="off"&&t.fxBuf)?t.fxBuf:t.buffer; }
+function fxBufOf(t){ return (fxActive(t)&&t.fxBuf)?t.fxBuf:t.buffer; }
+/* The beat's key, found in the background. A major key and its relative
+   minor use exactly the same notes, so that is how it is shown. */
+let keyKid=0; const keyJobs=new Map();
+function keyMajorRoot(k){ return k.mode==="major"?k.root:(k.root+3)%12; }
+function keyLabel(k){ const m=keyMajorRoot(k); return NOTE_NAMES[m]+" major / "+NOTE_NAMES[(m+9)%12]+" minor"; }
+function detectBeatKey(beat){
+  if(!beat||beat.key||beat.keyBusy||!beat.buffer) return;
+  beat.keyBusy=true;
+  const b=beat.buffer, sr=b.sampleRate, n=b.length, span=Math.min(n,sr*60), from=Math.floor((n-span)/2);
+  const mono=new Float32Array(span);
+  for(let c=0;c<b.numberOfChannels;c++){ const d=b.getChannelData(c); for(let i=0;i<span;i++) mono[i]+=d[from+i]/b.numberOfChannels; }
+  const kid=++keyKid; keyJobs.set(kid,beat);
+  if(FX.worker){ try{ FX.worker.postMessage({kind:"key",kid:kid,chans:[mono],sr:sr},[mono.buffer]); return; }catch(e){ FX.worker=null; } }
+  setTimeout(()=>{
+    let key=null; try{ if(!FX.inline) FX.inline=fxCore(); key=FX.inline.detectKey([mono],sr); }catch(e){}
+    keyDone({kind:"key",kid:kid,key:key});
+  },30);
+}
+function keyDone(d){
+  const beat=keyJobs.get(d.kid); keyJobs.delete(d.kid); if(!beat) return;
+  beat.keyBusy=false;
+  if(d.key&&!d.error) beat.key=d.key;
+  if(S.beat===beat){ renderBeat(); if(!scrubSt) renderTakes(); }
+}
 function renderFx(t){
   const key=fxKeyOf(t);
   if(!key){ t.fxBuf=null; t.fxKey=""; t.fxPending=""; t.fxBusy=false; fxStatus(t); return; }
@@ -890,12 +1121,13 @@ function renderFx(t){
   const seq=++FX.seq; FX.jobs.set(seq,{t:t,key:key});
   const chans=[];
   for(let c=0;c<t.buffer.numberOfChannels;c++) chans.push(Float32Array.from(t.buffer.getChannelData(c)));
-  const msg={id:t.id,seq:seq,chans:chans,sr:t.buffer.sampleRate,preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo,bpm:(S.beat&&S.beat.bpm)||0};
+  const msg={id:t.id,seq:seq,chans:chans,sr:t.buffer.sampleRate,preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo,bpm:(S.beat&&S.beat.bpm)||0,
+    tune:t.fx.tune.mode!=="off"?{mode:t.fx.tune.mode,root:t.fx.tune.root,scale:t.fx.tune.scale}:null};
   if(FX.worker){ try{ FX.worker.postMessage(msg,chans.map(c=>c.buffer)); return; }catch(e){ FX.worker=null; } }
   setTimeout(()=>{
     try{
       if(!FX.inline) FX.inline=fxCore();
-      const r=FX.inline(msg.chans,msg.sr,msg.preset,msg.amount,msg.bpm,msg.verb,msg.echo);
+      const r=FX.inline(msg.chans,msg.sr,msg.preset,msg.amount,msg.bpm,msg.verb,msg.echo,msg.tune);
       fxDone({id:t.id,seq:seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr});
     }catch(e){ fxDone({id:t.id,seq:seq,error:String(e&&e.message||e)}); }
   },30);
@@ -916,7 +1148,7 @@ function fxDone(d){
 function fxStatus(t){
   const row=document.querySelector('.take[data-id="'+t.id+'"]'); if(!row) return;
   const el=row.querySelector("[data-fxst]"); if(!el) return;
-  el.textContent = t.fxBusy ? "rendering…" : (t.fx.preset==="off" ? "" : "ready");
+  el.textContent = t.fxBusy ? "rendering…" : (fxActive(t) ? "ready" : "");
 }
 function fxAllReady(){ return !S.takes.some(t=>t.fxBusy); }
 
@@ -1128,7 +1360,7 @@ async function saveProject(){
       takes:S.takes.map(t=>({
         name:t.name, blob:t.blob, mime:t.mime, offset:t.offset,
         nudge:t.nudge, gain:t.gain, pan:t.pan, mute:t.mute, solo:t.solo,
-        recorded:!!t.recorded, fx:t.fx?{preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo}:null
+        recorded:!!t.recorded, fx:t.fx?{preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo,tune:{mode:t.fx.tune.mode,root:t.fx.tune.root,scale:t.fx.tune.scale}}:null
       }))
     });
     let e=SESS.list.find(x=>x.id===id);
@@ -1170,8 +1402,9 @@ async function loadProject(id){
             recorded:!!t.recorded,
             fx:(t.fx&&FX_LABEL[t.fx.preset])?{preset:t.fx.preset,amount:typeof t.fx.amount==="number"?t.fx.amount:0.6,
                  verb:typeof t.fx.verb==="number"?t.fx.verb:SPACE_DEFAULT[t.fx.preset][0],
-                 echo:typeof t.fx.echo==="number"?t.fx.echo:SPACE_DEFAULT[t.fx.preset][1]}
-               :{preset:"off",amount:0.6,verb:0,echo:0},
+                 echo:typeof t.fx.echo==="number"?t.fx.echo:SPACE_DEFAULT[t.fx.preset][1],
+                 tune:(t.fx.tune&&TUNE_LABEL[t.fx.tune.mode])?{mode:t.fx.tune.mode,root:(t.fx.tune.root|0)%12,scale:SCALE_LABEL[t.fx.tune.scale]?t.fx.tune.scale:"major"}:{mode:"off",root:0,scale:"major"}}
+               :{preset:"off",amount:0.6,verb:0,echo:0,tune:{mode:"off",root:0,scale:"major"}},
             fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false,abLatch:false
           });
           any=true;
@@ -1180,6 +1413,7 @@ async function loadProject(id){
     }
   }catch(e){}
   S.takes.forEach(renderFx);
+  detectBeatKey(S.beat);
   return any;
 }
 
@@ -1452,7 +1686,7 @@ function renderBeat(){
   const has=!!S.beat;
   $("beatDash").hidden=has;
   $("beatBody").hidden=!has;
-  $("beatMeta").textContent = has?(fmt(S.beat.buffer.duration)+(S.beat.bpm?"  ·  "+S.beat.bpm+" BPM":"")):"";
+  $("beatMeta").textContent = has?(fmt(S.beat.buffer.duration)+(S.beat.bpm?"  ·  "+S.beat.bpm+" BPM":"")+(S.beat.key?"  ·  "+keyLabel(S.beat.key):"")):"";
   if(!has) return;
   $("beatName").textContent=S.beat.name;
   $("beatVol").value=S.beatVol;
@@ -1509,8 +1743,25 @@ function takeRow(t,i){
             '<span class="v">'+Math.round(t.fx.verb*100)+'</span></div>'+
           '<div class="knob"><span class="k">Echo</span>'+
             '<input type="range" min="0" max="1" step="0.05" value="'+t.fx.echo+'" data-act="fxecho">'+
-            '<span class="v">'+Math.round(t.fx.echo*100)+'</span></div>'+
-          '<div class="acts" style="margin-top:6px;">'+
+            '<span class="v">'+Math.round(t.fx.echo*100)+'</span></div>'
+        : '')+
+      '<div class="knob"><span class="k">Tune</span><div class="seg">'+
+        Object.keys(TUNE_LABEL).map(m=>'<button class="segb'+(t.fx.tune.mode===m?" on":"")+'" data-act="tunemode" data-mode="'+m+'">'+TUNE_LABEL[m]+'</button>').join("")+
+      '</div></div>'+
+      (t.fx.tune.mode!=="off"
+        ? '<div class="knob"><span class="k">Key</span>'+
+            '<select class="sel" data-act="tunekey" aria-label="Key">'+
+              NOTE_NAMES.map((nm,i)=>'<option value="'+i+'"'+(t.fx.tune.root===i?" selected":"")+'>'+nm+'</option>').join("")+
+            '</select>'+
+            '<div class="seg">'+
+              Object.keys(SCALE_LABEL).map(c=>'<button class="segb'+(t.fx.tune.scale===c?" on":"")+'" data-act="tunescale" data-scale="'+c+'">'+SCALE_LABEL[c]+'</button>').join("")+
+            '</div></div>'+
+          (S.beat&&S.beat.key
+            ? '<div class="acts" style="margin-top:2px;"><button class="btn sm" data-act="tunebeat" style="flex:1;">Use the beat\'s key — '+keyLabel(S.beat.key)+'</button></div>'
+            : '')
+        : '')+
+      (fxActive(t)
+        ? '<div class="acts" style="margin-top:6px;">'+
             '<button class="btn sm ab'+(t.abLatch?" on":"")+'" data-act="ab" style="flex:0 0 auto;padding-inline:12px;">'+(t.abLatch?"Hearing raw — tap to switch back":"Tap or hold: hear raw")+'</button>'+
             '<span class="fxst" data-fxst>'+(t.fxBusy?"rendering…":"ready")+'</span>'+
           '</div>'
@@ -1587,7 +1838,7 @@ let UNDO=[];
 function snap(){
   return {beat:S.beat, beatVol:S.beatVol, latency:S.latency,
     takes:S.takes.map(t=>({t:t,p:{offset:t.offset,nudge:t.nudge,gain:t.gain,pan:t.pan,
-      mute:t.mute,solo:t.solo,name:t.name,fx:{preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo}}}))};
+      mute:t.mute,solo:t.solo,name:t.name,fx:{preset:t.fx.preset,amount:t.fx.amount,verb:t.fx.verb,echo:t.fx.echo,tune:{mode:t.fx.tune.mode,root:t.fx.tune.root,scale:t.fx.tune.scale}}}}))};
 }
 function pushUndo(){
   UNDO.push(snap());
@@ -1601,7 +1852,7 @@ function undo(){
   S.beat=u.beat;
   S.beatVol=u.beatVol;
   if(u.latency!==S.latency){ S.latency=u.latency; saveLatency(); renderCheck(); }
-  S.takes=u.takes.map(x=>Object.assign(x.t,x.p,{fx:Object.assign({},x.p.fx)}));
+  S.takes=u.takes.map(x=>Object.assign(x.t,x.p,{fx:Object.assign({},x.p.fx,{tune:Object.assign({},x.p.fx.tune)})}));
   renderAll(); renderUndo(); scheduleSave();
   S.takes.forEach(renderFx);
   if(S.playing) play(nowPos());
@@ -1690,7 +1941,7 @@ async function play(from){
     g.connect(dest);
     /* raw and processed both run; A/B just crossfades between them */
     t.abRaw=!!(t.abLatch||(abHeld&&abHeld.t===t));
-    const srcs=[], fxb=(t.fx.preset!=="off"&&t.fxBuf)?t.fxBuf:null;
+    const srcs=[], fxb=(fxActive(t)&&t.fxBuf)?t.fxBuf:null;
     const s=c.createBufferSource(); s.buffer=t.buffer; srcs.push(s);
     let gRaw=null,gFx=null;
     if(fxb){
@@ -1927,7 +2178,7 @@ async function finishRec(){
     addTake(buf,blob,recMime,recFrom-S.latency/1000,"Take "+(S.takes.length+1),true);
     const nt=S.takes[S.takes.length-1];
     toast("Take "+S.takes.length+" captured — "+fmt(buf.duration).slice(0,5)+
-      (nt&&nt.fx.preset!=="off"?". "+FX_LABEL[nt.fx.preset]+" is on and rendering; hold the raw button to compare. ":". ")+
+      (nt&&fxActive(nt)?". "+FX_LABEL[nt.fx.preset]+" is on and rendering; hold the raw button to compare. ":". ")+
       "Off the beat? Slide SYNC or drag it.","good");
   }catch(e){
     toast("Couldn't read that take back: "+(e.message||e),"bad");
@@ -1941,12 +2192,12 @@ function addTake(buffer,blob,mime,offset,name,recorded){
     id:++S.seq,name:name,buffer:buffer,blob:blob,mime:mime||"",
     offset:offset||0,nudge:0,gain:1,pan:0,mute:false,solo:false,
     recorded:!!recorded,
-    fx:{preset:"off",amount:0.6,verb:0,echo:0},fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false,abLatch:false
+    fx:{preset:"off",amount:0.6,verb:0,echo:0,tune:{mode:"off",root:0,scale:"major"}},fxBuf:null,fxKey:"",fxPending:"",fxBusy:false,abRaw:false,abLatch:false
   });
   const t=S.takes[S.takes.length-1];
   /* only takes recorded here; imported files are left exactly as they came */
   if(recorded&&AUTO.on&&FX_LABEL[AUTO.preset]){
-    t.fx={preset:AUTO.preset,amount:1,verb:SPACE_DEFAULT[AUTO.preset][0],echo:SPACE_DEFAULT[AUTO.preset][1]};
+    t.fx={preset:AUTO.preset,amount:1,verb:SPACE_DEFAULT[AUTO.preset][0],echo:SPACE_DEFAULT[AUTO.preset][1],tune:{mode:"off",root:0,scale:"major"}};
     renderFx(t);
   }
   renderAll(); scheduleSave();
@@ -2076,6 +2327,7 @@ async function loadBeatFile(file){
     const buf=await decode(await file.arrayBuffer());
     pushUndo();
     S.beat={name:file.name,buffer:buf,blob:blob,bpm:detectBPM(envelope(buf))};
+    detectBeatKey(S.beat);
     S.takes.forEach(renderFx);
     S.playhead=0; stopAll(); renderAll(); scheduleSave();
     toast("Beat loaded — "+fmt(buf.duration).slice(0,5)+".","good");
@@ -2166,6 +2418,31 @@ $("takeList").addEventListener("click",e=>{
     renderAll(); renderFx(t); scheduleSave(); restartSoon();
     return;
   }
+  if(act==="tunemode"){
+    const m=btn.dataset.mode;
+    if(!TUNE_LABEL[m]||m===t.fx.tune.mode) return;
+    pushUndo(); t.abRaw=false; t.abLatch=false;
+    if(t.fx.tune.mode==="off"&&S.beat&&S.beat.key){   /* first time on: start in the beat's key */
+      t.fx.tune.root=keyMajorRoot(S.beat.key); t.fx.tune.scale="major";
+    }
+    t.fx.tune.mode=m;
+    renderAll(); renderFx(t); scheduleSave(); restartSoon();
+    return;
+  }
+  if(act==="tunescale"){
+    const c=btn.dataset.scale;
+    if(!SCALE_LABEL[c]||c===t.fx.tune.scale) return;
+    pushUndo(); t.fx.tune.scale=c;
+    renderAll(); renderFx(t); scheduleSave(); restartSoon();
+    return;
+  }
+  if(act==="tunebeat"){
+    if(!(S.beat&&S.beat.key)) return;
+    pushUndo(); t.fx.tune.root=keyMajorRoot(S.beat.key); t.fx.tune.scale="major";
+    renderAll(); renderFx(t); scheduleSave(); restartSoon();
+    toast("Tuning to "+keyLabel(S.beat.key)+" — they use the same notes.");
+    return;
+  }
   if(act==="mute"){ pushUndo(); t.mute=!t.mute; renderAll(); applyLive(); scheduleSave(); }
   else if(act==="solo"){
     pushUndo(); t.solo=!t.solo; renderAll(); applyLive(); scheduleSave();
@@ -2227,12 +2504,13 @@ $("takeList").addEventListener("input",e=>{
     t.fx[key]=parseFloat(v);
     if(vEl) vEl.textContent=Math.round(t.fx[key]*100);
   }
+  else if(act==="tunekey"){ t.fx.tune.root=parseInt(v,10)%12; }
   else if(act==="name"){ t.name=inp.value.slice(0,30); }
   scheduleSave();
 });
 /* sliders render on release, not on every tick */
 $("takeList").addEventListener("change",e=>{
-  const inp=e.target.closest('[data-act="fxamt"],[data-act="fxverb"],[data-act="fxecho"]'); if(!inp) return;
+  const inp=e.target.closest('[data-act="fxamt"],[data-act="fxverb"],[data-act="fxecho"],[data-act="tunekey"]'); if(!inp) return;
   const row=e.target.closest(".take"); if(!row) return;
   const t=S.takes.find(x=>x.id==row.dataset.id); if(t) renderFx(t);
 });

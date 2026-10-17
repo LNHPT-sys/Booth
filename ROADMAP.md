@@ -48,10 +48,16 @@ fits it. Rules taken from real use:
   record starts with it (off by default; imports are left alone; saved per
   person, not per session)
 
+- Autotune (per take): Off / Natural / Tight / Robot, key picker with
+  Major / Minor / Any note, and a one-tap "use the beat's key"; YIN pitch
+  tracking + PSOLA re-pitching (keeps the voice's character); beat key found
+  in the background; stacks under any Tone; runs in the worker
+
 ## Ideas, not started
 
-- Sound: keep tuning the presets on real takes; autotune (key picker + speed);
-  reverb/echo on an untouched (Off) take
+- Sound: keep tuning the presets on real takes; reverb/echo on an untouched
+  (Off) take; autotune: hear it on real vocals, tune the speeds, handle
+  doubled/stacked notes
 - Trim the start and end of a take, split, cut out a section
 - Punch in: re-record one bar or line
 - Zoom the timeline; loop a section such as the hook
