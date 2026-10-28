@@ -38,10 +38,18 @@ take to edit it in a bottom sheet (Mix / Sound), hold then drag to move,
 Sessions / Settings / Export sheets, live recording lane with mic meter,
 date-named sessions, Saved indicator.
 
-Next: trim, loop, punch-in ("Replace" vs "New take"), redo.
+Next: markers (verse / hook), more tuning of the sound presets on real takes.
 
 ## Done
 
+- Edit tab on every take: drag two gold handles to pick a part, then Keep only
+  this (trim), Cut this out (closes the gap), Split at playhead, Loop this part,
+  or Re-record from the left handle (punch-in: 2 s of lead-in, replaces the old
+  audio until you stop). All undoable.
+- Loop button: a gold band on the ruler with two draggable handles (snap to
+  beats); playback wraps at the end of the band without a gap
+- Redo (button and Ctrl/Cmd+Shift+Z); undo now also covers trims, cuts, splits
+  and replaces
 - Zoom and a follow-the-playhead timeline: pinch, − / + buttons, trackpad
   zoom, overview strip to jump around; the view follows playback and recording
 - Bluetooth latency lock-in keeps its correction when a take starts at 0:00
@@ -76,7 +84,4 @@ Next: trim, loop, punch-in ("Replace" vs "New take"), redo.
 - Sound: keep tuning the presets on real takes; reverb/echo on an untouched
   (Off) take; autotune: hear it on real vocals, tune the speeds, handle
   doubled/stacked notes
-- Trim the start and end of a take, split, cut out a section
-- Punch in: re-record one bar or line
-- Loop a section such as the hook
 - Markers for verse and hook
