@@ -270,6 +270,7 @@
   .loopb[aria-pressed="true"]{color:#2A1B05;border-color:transparent;background:linear-gradient(180deg,#FBE3A6,#E8B552 55%,#BE8629);box-shadow:0 3px 10px rgba(226,172,69,.25);}
   .loopb[disabled]{opacity:.32;pointer-events:none;}
   body.recording .loopb{opacity:.32;pointer-events:none;}
+  @media (max-width:350px){ .loopb{width:36px;padding:0;justify-content:center;font-size:0;gap:0;} }
   .lrul{position:absolute;left:0;right:0;top:0;height:26px;pointer-events:none;z-index:3;}
   .lrul[hidden]{display:none;}
   .lband{position:absolute;top:19px;height:6px;border-radius:3px;background:linear-gradient(180deg,#FBE3A6,#BE8629);opacity:.9;}
@@ -444,7 +445,7 @@
       <button class="rec" id="recBtn" aria-label="Record"><span class="dome"><i class="ico" data-ico="stop"></i></span></button>
       <button class="rbtn" id="playBtn" aria-label="Play" disabled><i class="ico" data-ico="play"></i></button>
     </div>
-    <div class="time"><span id="tcNow">00:00.0</span><span class="tot">/</span><span class="tot" id="tcEnd">00:00.0</span><button class="loopb" id="loopBtn" aria-pressed="false" disabled><i class="ico" data-ico="loop"></i>Loop</button></div>
+    <div class="time"><span id="tcNow">00:00.0</span><span class="tot">/</span><span class="tot" id="tcEnd">00:00.0</span><button class="loopb" id="loopBtn" aria-label="Loop" aria-pressed="false" disabled><i class="ico" data-ico="loop"></i>Loop</button></div>
     <nav class="nav">
       <button class="navb" id="navSessions"><i class="ico" data-ico="folder"></i>Sessions</button>
       <button class="navb" id="undoBtn" disabled><i class="ico" data-ico="undo"></i>Undo</button>
@@ -490,7 +491,7 @@
     <div class="blk"><div class="card">
       <button class="tog" id="tgMonitor" aria-pressed="false"><span class="t"><span class="lab">Hear my voice</span><span class="sub">Hear yourself while recording. Headphones only.</span></span><span class="sw"><i></i></span></button>
       <button class="tog" id="tgCount" aria-pressed="true"><span class="t"><span class="lab">Count-in</span><span class="sub">Four clicks before recording starts.</span></span><span class="sw"><i></i></span></button>
-      <button class="tog" id="tgLoop" aria-pressed="false"><span class="t"><span class="lab">Loop</span><span class="sub">Repeat the song when it ends.</span></span><span class="sw"><i></i></span></button>
+      <button class="tog" id="tgLoop" aria-pressed="false"><span class="t"><span class="lab">Repeat song</span><span class="sub">Start over from the top when the song ends.</span></span><span class="sw"><i></i></span></button>
       <button class="tog" id="tgAuto" aria-pressed="false"><span class="t"><span class="lab">Sound on new recordings</span><span class="sub">New takes start with a Tone. Your raw recording is always kept underneath.</span></span><span class="sw"><i></i></span></button>
     </div></div>
     <div class="blk" id="autoTone" hidden>
@@ -1171,12 +1172,12 @@ function fxWorkerFailed(){
 function fxInline(seq){
   const job=FX.jobs.get(seq); if(!job||job.ran) return;
   job.ran=true; clearTimeout(job.wd);
-  const t=job.t, chans=[];
-  for(let c=0;c<t.buffer.numberOfChannels;c++) chans.push(Float32Array.from(t.buffer.getChannelData(c)));
+  const t=job.t, b=job.buf, chans=[];
+  for(let c=0;c<b.numberOfChannels;c++) chans.push(Float32Array.from(b.getChannelData(c)));
   setTimeout(()=>{
     try{
       if(!FX.inline) FX.inline=fxCore();
-      const r=FX.inline(chans,t.buffer.sampleRate,t.fx.preset,t.fx.amount,(S.beat&&S.beat.bpm)||0,t.fx.verb,t.fx.echo,
+      const r=FX.inline(chans,b.sampleRate,t.fx.preset,t.fx.amount,(S.beat&&S.beat.bpm)||0,t.fx.verb,t.fx.echo,
         t.fx.tune.mode!=="off"?{mode:t.fx.tune.mode,root:t.fx.tune.root,scale:t.fx.tune.scale}:null);
       fxDone({id:t.id,seq:seq,chans:r.chans,gain:r.gain,avgGr:r.avgGr,tune:r.tune});
     }catch(e){ fxDone({id:t.id,seq:seq,error:String(e&&e.message||e)}); }
@@ -1970,6 +1971,7 @@ function renderMix(){
     : "Load a beat or record a take first.";
   setTog("tgMonitor",S.monitor);
   setTog("tgCount",S.countIn); setTog("tgLoop",S.loop); setTog("tgStems",S.stems);
+  renderLoop();
   renderAuto();
 }
 function setTog(id,on){ $(id).setAttribute("aria-pressed",on?"true":"false"); }
@@ -1998,7 +2000,23 @@ function pushUndo(){
   UNDO.push(snap());
   if(UNDO.length>50) UNDO.shift();
   REDO=[];
+  trimHistory();
   renderUndo();
+}
+/* Trims, cuts and replaces keep the old audio in the history so undo can bring
+   it back. Cap how much of it we hold so a phone doesn't run out of memory. */
+const UNDO_AUDIO_MB=300;
+function trimHistory(){
+  const cur=new Set(S.takes.map(t=>t.buffer));
+  const held=()=>{
+    const seen=new Set(); let n=0;
+    for(const u of UNDO) for(const x of u.takes){
+      const b=x.p.buffer; if(!b||cur.has(b)||seen.has(b)) continue;
+      seen.add(b); n+=b.length*b.numberOfChannels*4+((x.p.blob&&x.p.blob.size)||0);
+    }
+    return n/1048576;
+  };
+  while(UNDO.length>1&&held()>UNDO_AUDIO_MB) UNDO.shift();
 }
 function renderUndo(){ $("undoBtn").disabled=!UNDO.length||S.recording; $("redoBtn").disabled=!REDO.length||S.recording; }
 function undo(){
@@ -2475,11 +2493,11 @@ async function play(from,opt){
   cancelAnimationFrame(raf); raf=requestAnimationFrame(tick);
 }
 function pause(){
-  stopSources(); cancelAnimationFrame(raf);
+  playTok++; stopSources(); cancelAnimationFrame(raf);
   S.playing=false; setPlayIcon();
 }
 function stopAll(){
-  stopSources(); cancelAnimationFrame(raf);
+  playTok++; stopSources(); cancelAnimationFrame(raf);
   S.playing=false; S.playhead=0; setPlayIcon(); renderHeads();
 }
 function setPlayIcon(){
@@ -3279,7 +3297,7 @@ $("mini").addEventListener("pointercancel",()=>{ miniDrag=false; });
 let rz=0;
 window.addEventListener("resize",()=>{
   clearTimeout(rz);
-  rz=setTimeout(()=>{ renderBeat(); renderTracks(); renderHeads(); syncBarH(); layoutForSheet(); },180);
+  rz=setTimeout(()=>{ renderBeat(); renderTracks(); renderHeads(); syncBarH(); layoutForSheet(); if(UI.sheet==="take"&&UI.tab==="edit") drawEdit(); },180);
 });
 document.addEventListener("keydown",e=>{
   if(e.target&&/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
